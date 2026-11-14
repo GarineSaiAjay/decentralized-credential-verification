@@ -61,6 +61,7 @@ contract LedgerAnchorTest is Test {
 
     function test_anchorStoresAndEmits() public {
         vm.warp(1_800_000_000);
+        vm.roll(777);
         vm.expectEmit();
         emit Anchored(1, 1, _hash(1), _root(1), 42);
         vm.prank(anchorer);
@@ -71,6 +72,7 @@ contract LedgerAnchorTest is Test {
         assertEq(a.merkleRoot, _root(1));
         assertEq(a.leafCount, 42);
         assertEq(a.anchoredAt, 1_800_000_000);
+        assertEq(a.blockNumber, 777);
         assertEq(ledger.nextHeight(), 2);
     }
 

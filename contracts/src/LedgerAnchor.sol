@@ -22,6 +22,7 @@ contract LedgerAnchor is Ownable2Step {
         bytes32 merkleRoot;
         uint32 leafCount;
         uint64 anchoredAt; // chain time; 0 means "not anchored"
+        uint64 blockNumber; // chain block that holds the anchoring transaction (to find its event cheaply)
     }
 
     struct AnchorInput {
@@ -156,7 +157,7 @@ contract LedgerAnchor is Ownable2Step {
             // This epoch covers the height but has not anchored it (yet): older anchors are superseded.
             if (epochStartHeight[e] <= height) break;
         }
-        return (0, Anchor(bytes32(0), bytes32(0), 0, 0));
+        return (0, Anchor(bytes32(0), bytes32(0), 0, 0, 0));
     }
 
     function isRevoked(uint64 epoch_, uint64 height, uint32 leafIndex) public view returns (bool) {
@@ -195,7 +196,8 @@ contract LedgerAnchor is Ownable2Step {
     function _anchor(uint64 height, bytes32 blockHash, bytes32 merkleRoot, uint32 leafCount) private {
         if (height != nextHeight) revert WrongHeight(nextHeight, height);
         if (blockHash == bytes32(0) || merkleRoot == bytes32(0) || leafCount == 0) revert ZeroValue();
-        _anchors[epoch][height] = Anchor(blockHash, merkleRoot, leafCount, uint64(block.timestamp));
+        _anchors[epoch][height] =
+            Anchor(blockHash, merkleRoot, leafCount, uint64(block.timestamp), uint64(block.number));
         nextHeight = height + 1;
         emit Anchored(epoch, height, blockHash, merkleRoot, leafCount);
     }
