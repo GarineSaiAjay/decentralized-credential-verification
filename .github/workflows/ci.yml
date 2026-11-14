@@ -158,6 +158,23 @@ jobs:
       - run: ./scripts/gen-env.sh
       - run: ./scripts/observability-test.sh
 
+  # Released migrations are never edited, and later ones must leave the existing schema as it was
+  # (apply everything, undo what is above the baseline, compare with backend/schema-baseline.txt).
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: scripts/check-migrations.sh
+
   pins:
     runs-on: ubuntu-latest
     steps:

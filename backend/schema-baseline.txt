@@ -1,0 +1,225 @@
+column | approval_countersigs | approval_id | uuid | NO | -
+column | approval_countersigs | authenticator_data | bytea | NO | -
+column | approval_countersigs | client_data_json | bytea | NO | -
+column | approval_countersigs | created_at | timestamp with time zone | NO | now()
+column | approval_countersigs | origin | text | NO | -
+column | approval_countersigs | rp_id | text | NO | -
+column | approval_countersigs | signature | bytea | NO | -
+column | approval_countersigs | user_key_id | uuid | NO | -
+column | approvals | approver_id | uuid | NO | -
+column | approvals | credential_id | uuid | NO | -
+column | approvals | id | uuid | NO | -
+column | approvals | key_id | uuid | NO | -
+column | approvals | role | text | NO | -
+column | approvals | signature | text | NO | -
+column | approvals | signed_at | timestamp with time zone | NO | now()
+column | audit_logs | action | text | NO | -
+column | audit_logs | actor_email | text | YES | -
+column | audit_logs | actor_id | uuid | YES | -
+column | audit_logs | created_at | timestamp with time zone | NO | now()
+column | audit_logs | details | jsonb | YES | -
+column | audit_logs | id | bigint | NO | nextval('audit_logs_id_seq'::regclass)
+column | audit_logs | resource_id | text | YES | -
+column | audit_logs | resource_type | text | YES | -
+column | block_timestamps | block_height | bigint | NO | -
+column | block_timestamps | created_at | timestamp with time zone | NO | now()
+column | block_timestamps | gen_time | timestamp with time zone | NO | -
+column | block_timestamps | imprint | text | NO | -
+column | block_timestamps | request | bytea | NO | -
+column | block_timestamps | response | bytea | NO | -
+column | block_timestamps | serial | text | NO | -
+column | block_timestamps | tsa_url | text | NO | -
+column | blocks | block_hash | text | NO | -
+column | blocks | height | bigint | NO | -
+column | blocks | key_id | uuid | NO | -
+column | blocks | leaves | jsonb | NO | -
+column | blocks | merkle_root | text | NO | -
+column | blocks | prev_hash | text | NO | -
+column | blocks | signature | text | NO | -
+column | blocks | ts | bigint | NO | -
+column | credential_events | actor_id | uuid | YES | -
+column | credential_events | created_at | timestamp with time zone | NO | now()
+column | credential_events | credential_id | uuid | NO | -
+column | credential_events | key_id | uuid | NO | -
+column | credential_events | kind | text | NO | -
+column | credential_events | legacy | boolean | NO | false
+column | credential_events | reason | text | NO | -
+column | credential_events | signature | text | NO | -
+column | credential_events | stage | text | NO | -
+column | credential_events | ts | bigint | NO | -
+column | credentials | block_height | bigint | YES | -
+column | credentials | created_at | timestamp with time zone | NO | now()
+column | credentials | created_by | uuid | NO | -
+column | credentials | credential_hash | text | NO | -
+column | credentials | gpa | text | YES | -
+column | credentials | graduation_date | date | NO | -
+column | credentials | honors | text | YES | -
+column | credentials | id | uuid | NO | -
+column | credentials | leaf_index | integer | YES | -
+column | credentials | program | text | NO | -
+column | credentials | revoke_reason | text | YES | -
+column | credentials | revoked_at | timestamp with time zone | YES | -
+column | credentials | status | text | NO | -
+column | credentials | student_id | text | NO | -
+column | credentials | student_name | text | NO | -
+column | credentials | supersedes | uuid | YES | -
+column | nonces | nonce | text | NO | -
+column | nonces | used_at | timestamp with time zone | NO | now()
+column | password_resets | created_at | timestamp with time zone | NO | now()
+column | password_resets | created_by | uuid | NO | -
+column | password_resets | expires_at | timestamp with time zone | NO | -
+column | password_resets | id | uuid | NO | -
+column | password_resets | token_hash | bytea | NO | -
+column | password_resets | used_at | timestamp with time zone | YES | -
+column | password_resets | user_id | uuid | NO | -
+column | rate_limits | hits | integer | NO | -
+column | rate_limits | key | text | NO | -
+column | rate_limits | window_start | bigint | NO | -
+column | sessions | created_at | timestamp with time zone | NO | now()
+column | sessions | expires_at | timestamp with time zone | NO | -
+column | sessions | id | uuid | NO | -
+column | sessions | ip | text | YES | -
+column | sessions | mfa_pending | boolean | NO | false
+column | sessions | revoked_at | timestamp with time zone | YES | -
+column | sessions | user_agent | text | YES | -
+column | sessions | user_id | uuid | NO | -
+column | signing_keys | created_at | timestamp with time zone | NO | now()
+column | signing_keys | id | uuid | NO | -
+column | signing_keys | private_key_enc | bytea | NO | -
+column | signing_keys | public_key | text | NO | -
+column | signing_keys | revoke_reason | text | YES | -
+column | signing_keys | revoked_at | timestamp with time zone | YES | -
+column | signing_keys | role | text | NO | -
+column | signing_keys | status | text | NO | -
+column | totp_recovery | code_hash | bytea | NO | -
+column | totp_recovery | id | uuid | NO | -
+column | totp_recovery | used_at | timestamp with time zone | YES | -
+column | totp_recovery | user_id | uuid | NO | -
+column | user_keys | created_at | timestamp with time zone | NO | now()
+column | user_keys | credential_id | bytea | NO | -
+column | user_keys | end_reason | text | YES | -
+column | user_keys | ended_at | timestamp with time zone | YES | -
+column | user_keys | id | uuid | NO | -
+column | user_keys | label | text | NO | -
+column | user_keys | public_key | bytea | NO | -
+column | user_keys | sign_count | bigint | NO | 0
+column | user_keys | status | text | NO | 'active'::text
+column | user_keys | user_id | uuid | NO | -
+column | user_totp | confirmed_at | timestamp with time zone | YES | -
+column | user_totp | created_at | timestamp with time zone | NO | now()
+column | user_totp | last_step | bigint | NO | 0
+column | user_totp | secret_enc | bytea | NO | -
+column | user_totp | user_id | uuid | NO | -
+column | users | active | boolean | NO | true
+column | users | created_at | timestamp with time zone | NO | now()
+column | users | email | text | NO | -
+column | users | id | uuid | NO | -
+column | users | key_enroll_until | timestamp with time zone | YES | -
+column | users | password_hash | text | NO | -
+column | users | role | text | NO | -
+column | webauthn_challenges | challenge | bytea | NO | -
+column | webauthn_challenges | expires_at | timestamp with time zone | NO | -
+column | webauthn_challenges | id | uuid | NO | -
+column | webauthn_challenges | user_id | uuid | NO | -
+constraint | approval_countersigs | approval_countersigs_approval_id_fkey | FOREIGN KEY (approval_id) REFERENCES approvals(id)
+constraint | approval_countersigs | approval_countersigs_pkey | PRIMARY KEY (approval_id)
+constraint | approval_countersigs | approval_countersigs_user_key_id_fkey | FOREIGN KEY (user_key_id) REFERENCES user_keys(id)
+constraint | approvals | approvals_approver_id_fkey | FOREIGN KEY (approver_id) REFERENCES users(id)
+constraint | approvals | approvals_credential_id_fkey | FOREIGN KEY (credential_id) REFERENCES credentials(id)
+constraint | approvals | approvals_credential_id_role_key | UNIQUE (credential_id, role)
+constraint | approvals | approvals_key_id_fkey | FOREIGN KEY (key_id) REFERENCES signing_keys(id)
+constraint | approvals | approvals_pkey | PRIMARY KEY (id)
+constraint | approvals | approvals_role_check | CHECK ((role = ANY (ARRAY['faculty'::text, 'exam_cell'::text, 'registrar'::text, 'university'::text])))
+constraint | audit_logs | audit_logs_pkey | PRIMARY KEY (id)
+constraint | block_timestamps | block_timestamps_block_height_fkey | FOREIGN KEY (block_height) REFERENCES blocks(height)
+constraint | block_timestamps | block_timestamps_pkey | PRIMARY KEY (block_height)
+constraint | blocks | blocks_block_hash_key | UNIQUE (block_hash)
+constraint | blocks | blocks_key_id_fkey | FOREIGN KEY (key_id) REFERENCES signing_keys(id)
+constraint | blocks | blocks_pkey | PRIMARY KEY (height)
+constraint | credential_events | credential_events_actor_id_fkey | FOREIGN KEY (actor_id) REFERENCES users(id)
+constraint | credential_events | credential_events_credential_id_fkey | FOREIGN KEY (credential_id) REFERENCES credentials(id)
+constraint | credential_events | credential_events_key_id_fkey | FOREIGN KEY (key_id) REFERENCES signing_keys(id)
+constraint | credential_events | credential_events_kind_check | CHECK ((kind = ANY (ARRAY['rejected'::text, 'revoked'::text])))
+constraint | credential_events | credential_events_pkey | PRIMARY KEY (credential_id)
+constraint | credential_events | credential_events_stage_check | CHECK ((stage = ANY (ARRAY['faculty'::text, 'exam_cell'::text, 'registrar'::text, 'university'::text])))
+constraint | credentials | credentials_block_height_fkey | FOREIGN KEY (block_height) REFERENCES blocks(height)
+constraint | credentials | credentials_created_by_fkey | FOREIGN KEY (created_by) REFERENCES users(id)
+constraint | credentials | credentials_credential_hash_key | UNIQUE (credential_hash)
+constraint | credentials | credentials_pkey | PRIMARY KEY (id)
+constraint | credentials | credentials_status_check | CHECK ((status = ANY (ARRAY['pending_exam_cell'::text, 'pending_registrar'::text, 'pending_university'::text, 'issued'::text, 'rejected'::text, 'revoked'::text])))
+constraint | credentials | credentials_supersedes_fkey | FOREIGN KEY (supersedes) REFERENCES credentials(id)
+constraint | nonces | nonces_pkey | PRIMARY KEY (nonce)
+constraint | password_resets | password_resets_created_by_fkey | FOREIGN KEY (created_by) REFERENCES users(id)
+constraint | password_resets | password_resets_pkey | PRIMARY KEY (id)
+constraint | password_resets | password_resets_token_hash_key | UNIQUE (token_hash)
+constraint | password_resets | password_resets_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+constraint | rate_limits | rate_limits_pkey | PRIMARY KEY (key)
+constraint | sessions | sessions_pkey | PRIMARY KEY (id)
+constraint | sessions | sessions_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+constraint | signing_keys | signing_keys_pkey | PRIMARY KEY (id)
+constraint | signing_keys | signing_keys_public_key_key | UNIQUE (public_key)
+constraint | signing_keys | signing_keys_role_check | CHECK ((role = ANY (ARRAY['faculty'::text, 'exam_cell'::text, 'registrar'::text, 'university'::text])))
+constraint | signing_keys | signing_keys_status_check | CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text, 'revoked'::text])))
+constraint | totp_recovery | totp_recovery_pkey | PRIMARY KEY (id)
+constraint | totp_recovery | totp_recovery_user_id_code_hash_key | UNIQUE (user_id, code_hash)
+constraint | totp_recovery | totp_recovery_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+constraint | user_keys | user_keys_credential_id_key | UNIQUE (credential_id)
+constraint | user_keys | user_keys_pkey | PRIMARY KEY (id)
+constraint | user_keys | user_keys_status_check | CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text, 'revoked'::text])))
+constraint | user_keys | user_keys_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+constraint | user_totp | user_totp_pkey | PRIMARY KEY (user_id)
+constraint | user_totp | user_totp_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+constraint | users | users_email_key | UNIQUE (email)
+constraint | users | users_pkey | PRIMARY KEY (id)
+constraint | users | users_role_check | CHECK ((role = ANY (ARRAY['faculty'::text, 'exam_cell'::text, 'registrar'::text, 'university_admin'::text, 'auditor'::text])))
+constraint | webauthn_challenges | webauthn_challenges_pkey | PRIMARY KEY (id)
+constraint | webauthn_challenges | webauthn_challenges_user_id_fkey | FOREIGN KEY (user_id) REFERENCES users(id)
+index | approval_countersigs | approval_countersigs_pkey | CREATE UNIQUE INDEX approval_countersigs_pkey ON public.approval_countersigs USING btree (approval_id)
+index | approvals | approvals_credential_id_role_key | CREATE UNIQUE INDEX approvals_credential_id_role_key ON public.approvals USING btree (credential_id, role)
+index | approvals | approvals_pkey | CREATE UNIQUE INDEX approvals_pkey ON public.approvals USING btree (id)
+index | audit_logs | audit_logs_action_idx | CREATE INDEX audit_logs_action_idx ON public.audit_logs USING btree (action, id DESC)
+index | audit_logs | audit_logs_pkey | CREATE UNIQUE INDEX audit_logs_pkey ON public.audit_logs USING btree (id)
+index | block_timestamps | block_timestamps_pkey | CREATE UNIQUE INDEX block_timestamps_pkey ON public.block_timestamps USING btree (block_height)
+index | blocks | blocks_block_hash_key | CREATE UNIQUE INDEX blocks_block_hash_key ON public.blocks USING btree (block_hash)
+index | blocks | blocks_pkey | CREATE UNIQUE INDEX blocks_pkey ON public.blocks USING btree (height)
+index | credential_events | credential_events_pkey | CREATE UNIQUE INDEX credential_events_pkey ON public.credential_events USING btree (credential_id)
+index | credentials | credentials_created_by_idx | CREATE INDEX credentials_created_by_idx ON public.credentials USING btree (created_by)
+index | credentials | credentials_created_idx | CREATE INDEX credentials_created_idx ON public.credentials USING btree (created_at DESC, id DESC)
+index | credentials | credentials_credential_hash_key | CREATE UNIQUE INDEX credentials_credential_hash_key ON public.credentials USING btree (credential_hash)
+index | credentials | credentials_pkey | CREATE UNIQUE INDEX credentials_pkey ON public.credentials USING btree (id)
+index | credentials | credentials_status_idx | CREATE INDEX credentials_status_idx ON public.credentials USING btree (status)
+index | credentials | credentials_student_idx | CREATE INDEX credentials_student_idx ON public.credentials USING btree (student_id)
+index | credentials | credentials_supersedes_idx | CREATE INDEX credentials_supersedes_idx ON public.credentials USING btree (supersedes) WHERE (supersedes IS NOT NULL)
+index | nonces | nonces_pkey | CREATE UNIQUE INDEX nonces_pkey ON public.nonces USING btree (nonce)
+index | nonces | nonces_used_at_idx | CREATE INDEX nonces_used_at_idx ON public.nonces USING btree (used_at)
+index | password_resets | password_resets_pkey | CREATE UNIQUE INDEX password_resets_pkey ON public.password_resets USING btree (id)
+index | password_resets | password_resets_token_hash_key | CREATE UNIQUE INDEX password_resets_token_hash_key ON public.password_resets USING btree (token_hash)
+index | password_resets | password_resets_user_idx | CREATE INDEX password_resets_user_idx ON public.password_resets USING btree (user_id)
+index | rate_limits | rate_limits_pkey | CREATE UNIQUE INDEX rate_limits_pkey ON public.rate_limits USING btree (key)
+index | rate_limits | rate_limits_window_idx | CREATE INDEX rate_limits_window_idx ON public.rate_limits USING btree (window_start)
+index | sessions | sessions_pkey | CREATE UNIQUE INDEX sessions_pkey ON public.sessions USING btree (id)
+index | sessions | sessions_user_idx | CREATE INDEX sessions_user_idx ON public.sessions USING btree (user_id)
+index | signing_keys | one_active_key_per_role | CREATE UNIQUE INDEX one_active_key_per_role ON public.signing_keys USING btree (role) WHERE (status = 'active'::text)
+index | signing_keys | signing_keys_pkey | CREATE UNIQUE INDEX signing_keys_pkey ON public.signing_keys USING btree (id)
+index | signing_keys | signing_keys_public_key_key | CREATE UNIQUE INDEX signing_keys_public_key_key ON public.signing_keys USING btree (public_key)
+index | totp_recovery | totp_recovery_pkey | CREATE UNIQUE INDEX totp_recovery_pkey ON public.totp_recovery USING btree (id)
+index | totp_recovery | totp_recovery_user_id_code_hash_key | CREATE UNIQUE INDEX totp_recovery_user_id_code_hash_key ON public.totp_recovery USING btree (user_id, code_hash)
+index | user_keys | user_keys_credential_id_key | CREATE UNIQUE INDEX user_keys_credential_id_key ON public.user_keys USING btree (credential_id)
+index | user_keys | user_keys_pkey | CREATE UNIQUE INDEX user_keys_pkey ON public.user_keys USING btree (id)
+index | user_keys | user_keys_user_idx | CREATE INDEX user_keys_user_idx ON public.user_keys USING btree (user_id)
+index | user_totp | user_totp_pkey | CREATE UNIQUE INDEX user_totp_pkey ON public.user_totp USING btree (user_id)
+index | users | users_email_key | CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)
+index | users | users_pkey | CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)
+index | webauthn_challenges | webauthn_challenges_pkey | CREATE UNIQUE INDEX webauthn_challenges_pkey ON public.webauthn_challenges USING btree (id)
+trigger | approval_countersigs | approval_countersigs_append_only | CREATE TRIGGER approval_countersigs_append_only BEFORE DELETE OR UPDATE ON public.approval_countersigs FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | approvals | approvals_append_only | CREATE TRIGGER approvals_append_only BEFORE DELETE OR UPDATE ON public.approvals FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | audit_logs | audit_logs_append_only | CREATE TRIGGER audit_logs_append_only BEFORE DELETE OR UPDATE ON public.audit_logs FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | block_timestamps | block_timestamps_append_only | CREATE TRIGGER block_timestamps_append_only BEFORE DELETE OR UPDATE ON public.block_timestamps FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | blocks | blocks_append_only | CREATE TRIGGER blocks_append_only BEFORE DELETE OR UPDATE ON public.blocks FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | credential_events | credential_events_append_only | CREATE TRIGGER credential_events_append_only BEFORE DELETE OR UPDATE ON public.credential_events FOR EACH ROW EXECUTE FUNCTION forbid_mutation()
+trigger | credentials | credentials_final_status | CREATE TRIGGER credentials_final_status BEFORE UPDATE ON public.credentials FOR EACH ROW EXECUTE FUNCTION forbid_final_status_change()
+trigger | user_keys | user_keys_immutable | CREATE TRIGGER user_keys_immutable BEFORE UPDATE ON public.user_keys FOR EACH ROW EXECUTE FUNCTION forbid_key_material_change()
+function | forbid_final_status_change |  | eae7b4ad8b337aa1a6774c45fceb524f
+function | forbid_key_material_change |  | 329e656ca8fa29cfb064604267969382
+function | forbid_mutation |  | 05b73a0e299daac98bd788d417048e2f
+sequence | audit_logs_id_seq
