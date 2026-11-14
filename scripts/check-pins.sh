@@ -10,9 +10,9 @@ flag() { echo "unpinned: $1"; bad=$((bad + 1)); }
 while IFS= read -r l; do flag "$l"; done < <(
   grep -nE '^\s*-?\s*uses:' .github/workflows/*.yml | grep -vE 'uses:\s*\S+@[0-9a-f]{40}(\s|$)')
 while IFS= read -r l; do flag "$l"; done < <(
-  grep -nE '^\s*FROM\s' backend/Dockerfile frontend/Dockerfile | grep -vE '@sha256:[0-9a-f]{64}' | grep -viE 'FROM\s+scratch')
+  grep -nE '^\s*FROM\s' backend/Dockerfile frontend/Dockerfile chain/Dockerfile | grep -vE '@sha256:[0-9a-f]{64}' | grep -viE 'FROM\s+scratch')
 while IFS= read -r l; do flag "$l"; done < <(
-  grep -nE '^\s*image:' docker-compose*.yml .github/workflows/*.yml | grep -vE '@sha256:[0-9a-f]{64}')
+  grep -nE '^\s*image:' docker-compose*.yml deploy/*.yml .github/workflows/*.yml | grep -vE '@sha256:[0-9a-f]{64}')
 while IFS= read -r l; do flag "$l"; done < <(
   grep -nE 'docker run' .github/workflows/*.yml | grep -vE '@sha256:[0-9a-f]{64}')
 

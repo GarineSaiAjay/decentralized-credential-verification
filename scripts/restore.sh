@@ -50,7 +50,9 @@ fi
 docker compose stop backend >/dev/null 2>&1 || true
 $PSQL -c "DROP DATABASE IF EXISTS acvs WITH (FORCE)" >/dev/null
 $PSQL -c "CREATE DATABASE acvs OWNER acvs" >/dev/null
-stream | docker compose exec -T postgres pg_restore -U acvs -d acvs --no-owner --exit-on-error \
+# --no-acl: grants are not restored. The only grants in a backup belong to the optional on-chain worker's role,
+# which does not exist on a new host; scripts/chain-db-role.sh creates it and its grants again.
+stream | docker compose exec -T postgres pg_restore -U acvs -d acvs --no-owner --no-acl --exit-on-error \
   || { echo "the restore failed part-way; the database is incomplete. Restore again or investigate before starting the backend." >&2; exit 1; }
 
 echo "restored; starting the backend"

@@ -1,0 +1,44 @@
+# OPTIONAL: the on-chain worker (acvs-chain), which anchors sealed ledger blocks to a smart contract.
+# The stack runs exactly as before without this file. To add the worker, name it after the main file:
+#
+#   docker compose -f docker-compose.yml -f deploy/chain.yml up -d
+#   (production: -f docker-compose.prod.yml -f deploy/chain.yml)
+#
+# Before the first start: scripts/chain-setup.sh (secrets and the anchorer key), deploy the contracts
+# (contracts/README.md), set the CHAIN_* values in .env, then scripts/chain-db-role.sh.
+services:
+  chain:
+    build:
+      context: .
+      dockerfile: chain/Dockerfile
+    # The backend applies the migration that creates the worker's tables.
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      # The worker's own database role (scripts/chain-db-role.sh), not the backend's.
+      CHAIN_DATABASE_URL: postgresql://acvs_chain:${CHAIN_DB_PASSWORD:-}@postgres:5432/acvs
+      CHAIN_RPC_URL: ${CHAIN_RPC_URL:-}
+      CHAIN_ID: ${CHAIN_ID:-}
+      CHAIN_ANCHOR_CONTRACT: ${CHAIN_ANCHOR_CONTRACT:-}
+      CHAIN_KEYSTORE_FILE: /etc/acvs/chain/anchorer-keystore.json
+      CHAIN_KEYSTORE_PASSPHRASE: ${CHAIN_KEYSTORE_PASSPHRASE:-}
+      CHAIN_CONFIRMATIONS: ${CHAIN_CONFIRMATIONS:-}
+      CHAIN_INTERVAL_SECS: ${CHAIN_INTERVAL_SECS:-}
+      CHAIN_MAX_FEE_GWEI: ${CHAIN_MAX_FEE_GWEI:-}
+      CHAIN_TX_TIMEOUT_SECS: ${CHAIN_TX_TIMEOUT_SECS:-}
+      CHAIN_RPC_TIMEOUT_SECS: ${CHAIN_RPC_TIMEOUT_SECS:-}
+      CHAIN_POLL_MS: ${CHAIN_POLL_MS:-}
+      CHAIN_BATCH_SIZE: ${CHAIN_BATCH_SIZE:-}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      RUST_LOG: info
+    # Writes nothing to disk; unprivileged, read-only filesystem, no capabilities (as the backend).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      # Holds anchorer-keystore.json (encrypted). Never the issuer admin key: that one stays offline.
+      - ${CHAIN_KEY_DIR:-./deploy/chain}:/etc/acvs/chain:ro

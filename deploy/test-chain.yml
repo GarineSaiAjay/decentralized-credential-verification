@@ -1,0 +1,15 @@
+# TEST ONLY: adds a throwaway local chain (Anvil) for the on-chain worker to anchor to.
+# Used by scripts/chain-test.sh together with docker-compose.yml and deploy/chain.yml. Its accounts are
+# Anvil's public test accounts and its state is lost when the container stops. Never use it for real data.
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.9.0@sha256:3a392c18f9b16e665e932de159fb6fa9ed972c4b4352f2f76a1a8c7ca9b57d39
+    # A new block every second, so "wait for N confirmations" behaves as on a real network.
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--block-time", "1", "--silent"]
+    ports:
+      - "127.0.0.1:8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

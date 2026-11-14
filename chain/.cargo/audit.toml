@@ -1,0 +1,18 @@
+# Advisories we have looked at and accept. Each needs a reason, and should be removed once it no longer applies.
+[advisories]
+ignore = [
+  # `rsa` and `libsqlite3-sys` are named in Cargo.lock only because sqlx lists its MySQL and SQLite drivers;
+  # this worker uses Postgres, so neither crate is compiled or linked (`cargo tree -i rsa` and
+  # `cargo tree -i libsqlite3-sys` find nothing).
+  "RUSTSEC-2023-0071",
+  "RUSTSEC-2026-0459",
+  # crypto-bigint 0.5 timing variability, reached through elliptic-curve 0.13 (k256), which signs the
+  # worker's own transactions. Exploiting it needs an attacker who can time many signatures; the worker
+  # offers no signing service, signs only at its own initiative, and its key can do no more than anchor
+  # blocks. No k256 release on the fixed crypto-bigint exists yet. Revisit when alloy moves to one.
+  "RUSTSEC-2026-0387",
+  # `derivative` and `paste` are unmaintained procedural macros pulled in by alloy. They run at build time
+  # only and have no known vulnerability. Revisit when alloy drops them.
+  "RUSTSEC-2024-0388",
+  "RUSTSEC-2024-0436",
+]

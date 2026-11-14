@@ -1,0 +1,6 @@
+# The worker's image needs only its own sources and the backend's crypto.rs.
+*
+!chain/Cargo.toml
+!chain/Cargo.lock
+!chain/src
+!backend/src/crypto.rs

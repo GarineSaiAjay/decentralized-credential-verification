@@ -20,6 +20,16 @@ updates:
   - package-ecosystem: docker
     directory: /frontend
     schedule: { interval: weekly }
+  # The optional on-chain worker.
+  - package-ecosystem: cargo
+    directory: /chain
+    schedule: { interval: weekly }
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directory: /chain
+    schedule: { interval: weekly }
   # The images named in the compose files (Postgres, the WAF, Caddy).
   - package-ecosystem: docker-compose
     directory: /

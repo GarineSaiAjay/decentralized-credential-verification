@@ -51,6 +51,9 @@ jobs:
       - name: Rust dependencies (RustSec advisories)
         working-directory: backend # picks up .cargo/audit.toml, which lists the advisories we accept and why
         run: cargo install cargo-audit --locked --version ^0.22 && cargo audit --deny warnings
+      - name: Rust dependencies of the on-chain worker
+        working-directory: chain
+        run: cargo audit --deny warnings
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22 }
       - name: npm dependencies
@@ -63,11 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: docker build -t acvs-backend backend && docker build -t acvs-frontend frontend
+      - run: docker build -t acvs-backend backend && docker build -t acvs-frontend frontend && docker build -t acvs-chain -f chain/Dockerfile .
       # Our own images must have no fixable high or critical vulnerability and no embedded secret.
       - name: Scan the images this project builds
         run: |
-          for img in acvs-backend acvs-frontend; do
+          for img in acvs-backend acvs-frontend acvs-chain; do
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c image \
               --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln,secret --exit-code 1 "$img"
           done
@@ -75,7 +78,7 @@ jobs:
       # Dependabot opens a pull request when a newer tag exists.
       - name: Report on the images from other projects
         run: |
-          for img in $(grep -h 'image:' docker-compose*.yml | awk '{print $2}' | sort -u); do
+          for img in $(grep -h 'image:' docker-compose*.yml deploy/*.yml | awk '{print $2}' | sort -u); do
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c image \
               --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln "$img" || true
           done
@@ -188,6 +191,31 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { workspaces: contracts/tools/merkle-vectors }
       - run: scripts/contracts-test.sh
+
+  # The optional on-chain worker: unit tests, then the whole flow against a local chain.
+  chain:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: chain } }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with: { workspaces: chain }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  e2e-chain:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, chain, contracts]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { submodules: true }
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with: { version: v1.9.0 }
+      - run: ./scripts/gen-env.sh
+      - run: ./scripts/chain-test.sh
 
   pins:
     runs-on: ubuntu-latest
