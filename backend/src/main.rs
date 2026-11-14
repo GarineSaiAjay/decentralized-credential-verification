@@ -10,6 +10,7 @@ mod keybackup;
 mod keys;
 mod ledger;
 mod metrics;
+mod onchain;
 mod page;
 mod reset;
 mod security;
@@ -109,7 +110,8 @@ pub fn router(st: AppState) -> Router {
         .route(
             "/api/v1/ledger/blocks/:height/timestamp.tsr",
             get(timestamp::raw_response),
-        );
+        )
+        .route("/api/v1/ledger/blocks/:height/anchor", get(onchain::show));
 
     let reads = Router::new()
         .route("/api/v1/auth/me", get(auth::me))
@@ -336,6 +338,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timestamp::preflight(tsa).await?;
         tracing::info!(url = %tsa.url, "anchoring sealed blocks to an external timestamp authority");
         tokio::spawn(timestamp::run_forever(st.clone()));
+    }
+    if let Some(c) = &st.cfg.onchain {
+        tracing::info!(chain_id = c.chain_id, contract = %c.contract, "showing on-chain anchors written by the acvs-chain worker");
     }
 
     if let Some(addr) = st.cfg.metrics_bind.clone() {

@@ -60,6 +60,15 @@ const Status = ({ s }: { s: string }) => <span className={`status s-${s}`}>{s.re
 const short = (s: string, n = 8) => s.slice(0, n);
 const when = (s: string | number) => new Date(typeof s === 'number' ? s * 1000 : s).toLocaleString();
 const Err = ({ msg }: { msg: string }) => (msg ? <div className="notice err">{msg}</div> : null);
+/** A block's anchor on a public chain (shown only when the server reports one). Links to the transaction when an explorer is configured. */
+const OnChain = ({ o, long = false }: { o: any; long?: boolean }) => {
+  if (!o || o.status === 'none') return <span className="muted">{long ? 'not yet anchored on a public chain' : 'pending'}</span>;
+  if (o.status === 'mismatch') return <span className="bad">{long ? 'MISMATCH: the on-chain anchor is not for this block' : 'MISMATCH'}</span>;
+  const text = long ? `anchored ${when(o.anchored_at)} on chain ${o.chain_id} (epoch ${o.epoch}), transaction ${short(o.tx_hash, 18)}…` : when(o.anchored_at);
+  return o.explorer_url
+    ? <a className="good" href={o.explorer_url} target="_blank" rel="noopener noreferrer" title={o.tx_hash}>{text}</a>
+    : <span className="good" title={o.tx_hash}>{text}</span>;
+};
 const Card = ({ title, children }: { title: string; children: ReactNode }) => (
   <div className="box"><div className="box-title">{title}</div><div className="box-body">{children}</div></div>
 );
@@ -411,6 +420,7 @@ export function Verify({ id, h }: { id?: string; h?: string }) {
                     </td>
                   ) : <td className="muted">not yet timestamped by an outside authority</td>}
                 </tr>
+                {v.anchor.onchain && <tr><th>On-chain anchor</th><td><OnChain o={v.anchor.onchain} long /></td></tr>}
               </tbody></table>
             </Card>
           )}
@@ -466,11 +476,21 @@ export function Ledger({ role }: { role: Role }) {
         <button onClick={() => api('GET', '/ledger/verify').then(setChain)}>Verify whole chain</button>
         {chain && <span className={chain.ok ? 'good' : 'bad'}>{chain.ok ? `chain intact (${chain.length} blocks)` : `CHAIN BROKEN (blocks ${chain.failed_blocks?.join(', ')})`}</span>}
       </div>
+      {data?.onchain && (
+        <p className="muted">
+          Sealed blocks are also anchored on a public chain (chain {data.onchain.chain_id}, contract{' '}
+          {data.onchain.explorer_url ? <a className="mono" href={data.onchain.explorer_url} target="_blank" rel="noopener noreferrer">{data.onchain.contract}</a> : <span className="mono">{data.onchain.contract}</span>}).{' '}
+          {data.onchain.unanchored === 0 ? 'Every block is anchored.' : `${data.onchain.unanchored} block(s) waiting to be anchored.`}
+        </p>
+      )}
+      {data?.onchain?.open_incidents.map((i: any) => (
+        <div className="notice err" key={`${i.kind}-${i.height}-${i.at}`}>On-chain anchoring has stopped at block {i.height} ({i.kind.replace(/_/g, ' ')}). {i.note} Credentials are not affected.</div>
+      ))}
       <table>
-        <thead><tr><th>#</th><th>Credentials</th><th>Merkle root</th><th>Block hash</th><th>Sealed</th>{data?.timestamping && <th>External timestamp</th>}</tr></thead>
+        <thead><tr><th>#</th><th>Credentials</th><th>Merkle root</th><th>Block hash</th><th>Sealed</th>{data?.timestamping && <th>External timestamp</th>}{data?.onchain && <th>On-chain</th>}</tr></thead>
         <tbody>
           {blocks.map((b: any) => (
-            <tr key={b.height}><td>{b.height}</td><td>{b.credentials}</td><td className="mono">{short(b.merkle_root, 16)}…</td><td className="mono">{short(b.block_hash, 16)}…</td><td>{when(b.timestamp)}</td>{data.timestamping && <td>{b.external_timestamp ? <a href={`#/ledger`} onClick={(e) => { e.preventDefault(); api('GET', `/ledger/blocks/${b.height}/timestamp`).then((t) => window.alert(`${t.verified ? 'Verified' : 'NOT VERIFIED'}\nsigned ${when(t.time)} by ${t.tsa}\nserial ${t.serial}${t.error ? `\n${t.error}` : ''}`)); }}>{when(b.external_timestamp.time)}</a> : <span className="muted">pending</span>}</td>}</tr>
+            <tr key={b.height}><td>{b.height}</td><td>{b.credentials}</td><td className="mono">{short(b.merkle_root, 16)}…</td><td className="mono">{short(b.block_hash, 16)}…</td><td>{when(b.timestamp)}</td>{data.timestamping && <td>{b.external_timestamp ? <a href={`#/ledger`} onClick={(e) => { e.preventDefault(); api('GET', `/ledger/blocks/${b.height}/timestamp`).then((t) => window.alert(`${t.verified ? 'Verified' : 'NOT VERIFIED'}\nsigned ${when(t.time)} by ${t.tsa}\nserial ${t.serial}${t.error ? `\n${t.error}` : ''}`)); }}>{when(b.external_timestamp.time)}</a> : <span className="muted">pending</span>}</td>}{data.onchain && <td><OnChain o={b.onchain} /></td>}</tr>
           ))}
         </tbody>
       </table>

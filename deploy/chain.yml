@@ -7,6 +7,13 @@
 # Before the first start: scripts/chain-setup.sh (secrets and the anchorer key), deploy the contracts
 # (contracts/README.md), set the CHAIN_* values in .env, then scripts/chain-db-role.sh.
 services:
+  # The backend only shows what the worker recorded. It gets no key and never talks to the chain.
+  backend:
+    environment:
+      CHAIN_ID: ${CHAIN_ID:-}
+      CHAIN_ANCHOR_CONTRACT: ${CHAIN_ANCHOR_CONTRACT:-}
+      CHAIN_EXPLORER_URL: ${CHAIN_EXPLORER_URL:-}
+
   chain:
     build:
       context: .

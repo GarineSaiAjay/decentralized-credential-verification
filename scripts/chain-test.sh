@@ -20,7 +20,7 @@ export COMPOSE_PROJECT_NAME=acvschain
 export COMPOSE_FILE=docker-compose.yml:deploy/chain.yml:deploy/test-chain.yml
 export CHAIN_KEY_DIR="$T/chain" BACKUP_DIR="$T/backups"
 export CHAIN_DB_PASSWORD=$(openssl rand -hex 16) CHAIN_KEYSTORE_PASSPHRASE=$(openssl rand -hex 24)
-export CHAIN_RPC_URL=http://anvil:8545 CHAIN_ID=31337
+export CHAIN_RPC_URL=http://anvil:8545 CHAIN_ID=31337 CHAIN_EXPLORER_URL=https://explorer.test
 export CHAIN_CONFIRMATIONS=2 CHAIN_INTERVAL_SECS=2 CHAIN_POLL_MS=300 CHAIN_RPC_TIMEOUT_SECS=3
 unset BACKUP_PASSPHRASE CHAIN_ANCHOR_CONTRACT
 dc() { docker compose "$@"; }
@@ -76,6 +76,10 @@ dc build chain >/dev/null 2>&1 && ok "worker image builds" || { bad "worker imag
 dc up -d --build --wait postgres backend frontend anvil >/dev/null 2>&1 && ok "stack and local chain healthy" || { bad "stack did not start"; exit 1; }
 FAC=$(login faculty); EXC=$(login examcell); REG=$(login registrar); ADM=$(login admin)
 [ -n "$FAC$EXC$REG$ADM" ] || { echo "login failed"; exit 1; }
+# CHAIN_ID is set but there is no contract yet: a half-finished setup must not stop the backend.
+LOGS=$(dc logs backend 2>&1)
+[[ "$LOGS" == *'on-chain anchoring is not shown: CHAIN_ID and CHAIN_ANCHOR_CONTRACT must be set together'* ]] \
+  && ok "the backend runs with a half-finished on-chain setting and says so" || bad "no warning about the half-set on-chain setting"
 
 echo "== a ledger that exists before the on-chain layer is switched on"
 IDS=()
@@ -85,6 +89,9 @@ expect "all credentials VALID" "$(verdicts "${IDS[@]}")" " 6 VALID "
 call GET /ledger/verify; VERIFY_BEFORE=$(echo "$BODY" | j "[d['ok'], d['length'], [b['ok'] for b in d['blocks']]]")
 expect "the chain tables exist and are empty (nothing writes them without the worker)" \
   "$(DB "SELECT (SELECT count(*) FROM chain_anchors) + (SELECT count(*) FROM chain_revocations) + (SELECT count(*) FROM chain_incidents)")" 0
+call GET "/verify/${IDS[0]}"; VERIFY_OFF=$(echo "$BODY" | j "sorted(d['anchor'].keys())")
+call GET /ledger/blocks "$ADM"; expect "nothing about a chain in the API while it is not set up" "$(echo "$BODY" | j "'onchain' in d or 'onchain' in d['blocks'][0]")" False
+call GET /ledger/blocks/1/anchor; expect "and no receipt endpoint" "$CODE" 404
 BLOCKS_BEFORE=$(DB "SELECT md5(string_agg(height || block_hash || signature || leaves::text, ',' ORDER BY height)) FROM blocks WHERE height <= 3")
 
 echo "== set up the worker: key, contracts, database role"
@@ -104,6 +111,10 @@ export CHAIN_ANCHOR_CONTRACT=$LEDGER
 LOWER=$(echo "$LEDGER" | tr 'A-F' 'a-f')
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "worker database role created" || bad "chain-db-role.sh failed"
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "running the role script again is harmless" || bad "second run of chain-db-role.sh failed"
+dc up -d --wait backend >/dev/null 2>&1 && ok "backend restarted with the contract address (display on)" || bad "backend did not restart"
+call GET /ledger/blocks "$ADM"
+expect "the API now reports every block as not anchored yet" "$(echo "$BODY" | j "[d['onchain']['unanchored'], sorted({b['onchain']['status'] for b in d['blocks']})]")" "[3, ['none']]"
+call GET /ledger/verify; expect "which does not fail the ledger check" "$(echo "$BODY" | j "[d['ok'], d['blocks'][0]['onchain']]")" "[True, 'none']"
 
 echo "== the worker refuses to start with wrong settings"
 OUT=$(dc run --rm --no-deps -T chain check 2>&1); echo "$OUT" | grep -q '^ok' && ok "check passes with the right settings" || bad "check: $OUT"
@@ -142,7 +153,33 @@ expect "the contract expects block 4 next" "$(next_height)" 4
 expect "the existing blocks are byte-for-byte unchanged" "$(DB "SELECT md5(string_agg(height || block_hash || signature || leaves::text, ',' ORDER BY height)) FROM blocks WHERE height <= 3")" "$BLOCKS_BEFORE"
 expect "every credential keeps its verdict" "$(verdicts "${IDS[@]}")" " 6 VALID "
 call GET /ledger/verify; expect "the ledger check gives the same answer as before" "$(echo "$BODY" | j "[d['ok'], d['length'], [b['ok'] for b in d['blocks']]]")" "$VERIFY_BEFORE"
-dc logs chain 2>&1 | grep -qi "$CHAIN_KEYSTORE_PASSPHRASE\|$CHAIN_DB_PASSWORD" && bad "a secret appears in the worker's log" || ok "no secret in the worker's log"
+
+echo "== the API and the pages show the anchors"
+expect "the ledger check reports each block's anchor" "$(echo "$BODY" | j "[b['onchain'] for b in d['blocks']]")" "['ok', 'ok', 'ok']"
+call GET /ledger/blocks "$ADM"
+expect "the block list shows them anchored, none waiting, no incident" "$(echo "$BODY" | j "[d['onchain']['unanchored'], d['onchain']['open_incidents'], sorted({b['onchain']['status'] for b in d['blocks']})]")" "[0, [], ['ok']]"
+expect "and names the contract" "$(echo "$BODY" | j "d['onchain']['contract']")" "$LOWER"
+call GET "/verify/${IDS[0]}"
+expect "a credential's public verification shows its anchor" "$(echo "$BODY" | j "[d['verdict'], d['anchor']['onchain']['status'], d['anchor']['onchain']['chain_id'], d['anchor']['onchain']['epoch']]")" "['VALID', 'ok', 31337, 1]"
+expect "and gains only that one field" "$(echo "$BODY" | j "sorted(k for k in d['anchor'].keys() if k != 'onchain')")" "$VERIFY_OFF"
+call GET /ledger/blocks/2/anchor; expect "anyone can read a block's receipt" "$CODE" 200
+TX=$(echo "$BODY" | j "d['tx_hash']")
+expect "its transaction really is on the chain, sent to the contract" "$(cast tx "$TX" to -r $RPC | tr 'A-F' 'a-f')" "$LOWER"
+expect "the receipt's values are what the contract holds" "$(echo "$BODY" | j "d['anchored']['block_hash']")" "$(on_chain 1 2)"
+expect "it links to the explorer" "$(echo "$BODY" | j "d['explorer_url']")" "https://explorer.test/tx/$TX"
+METRICS=$(dc exec -T backend curl -fsS http://localhost:9090/metrics)
+expect "metrics: no block waiting, no mismatch, no incident" "$(echo "$METRICS" | grep -E '^acvs_onchain_(unanchored_blocks|mismatched_blocks|open_incidents) ' | awk '{print $2}' | tr '\n' ' ')" "0 0 0 "
+if [ -d e2e/node_modules ]; then
+  OUT=$(PASS=$PASS CRED=${IDS[0]} CHAIN_ID=31337 node e2e/chain-ui.mjs 2>&1); RC=$?
+  echo "$OUT" | grep -E '^  (ok|FAIL)'
+  [ $RC -eq 0 ] || fails=$((fails + $(echo "$OUT" | grep -c '^  FAIL') + ($(echo "$OUT" | grep -c '^  FAIL') == 0)))
+elif [ -n "${CHAIN_TEST_UI:-}" ]; then
+  bad "the browser check was required (CHAIN_TEST_UI) but e2e/node_modules is missing: run npm ci in e2e/"
+else
+  echo "  skip the browser check (run 'npm ci' in e2e/ to include it)"
+fi
+LOGS=$(dc logs chain backend 2>&1)
+[[ "$LOGS" == *"$CHAIN_KEYSTORE_PASSPHRASE"* || "$LOGS" == *"$CHAIN_DB_PASSWORD"* ]] && bad "a secret appears in a log" || ok "no secret in the worker's or the backend's log"
 
 echo "== anyone can check a credential against the chain alone"
 call GET "/verify/${IDS[3]}"
@@ -248,7 +285,12 @@ expect "no receipt for the block" "$(receipts "$LAST_H")" 0
 expect "nothing was sent" "$(nonce)" "$SENT"
 expect "the contract still holds the earlier anchor" "$(on_chain 1 "$LAST_H")" "$OLD_HASH"
 expect "the database block is untouched" "$(db_hash "$LAST_H")" "$NEW_HASH"
-dc logs chain 2>&1 | grep -q 'ON-CHAIN INCIDENT' && ok "the worker's log says so loudly" || bad "no incident in the log"
+LOGS=$(dc logs chain 2>&1)
+[[ "$LOGS" == *'ON-CHAIN INCIDENT'* ]] && ok "the worker's log says so loudly" || bad "no incident in the log"
+call GET /ledger/blocks "$ADM"
+expect "the ledger page's data reports the open incident" "$(echo "$BODY" | j "[(i['kind'], i['height']) for i in d['onchain']['open_incidents']]")" "[('anchor_mismatch', $LAST_H)]"
+expect "metrics: one open incident" "$(dc exec -T backend curl -fsS http://localhost:9090/metrics | grep '^acvs_onchain_open_incidents ' | awk '{print $2}')" 1
+call GET /ledger/verify; expect "the ledger itself still verifies (the incident is about anchoring)" "$(echo "$BODY" | j "d['ok']")" True
 call GET "/verify/$LAST_ID"; expect "the credential in that block is still VALID" "$(echo "$BODY" | j "d['verdict']")" VALID
 MISMATCH_H=$LAST_H
 new_block; IDS+=("$LAST_ID"); sleep 6
@@ -265,6 +307,9 @@ expect "earlier receipts stay in epoch 1" "$(DB "SELECT count(*) FROM chain_anch
 expect "the new anchor is the database block" "$(on_chain 2 "$MISMATCH_H")" "$NEW_HASH"
 expect "the superseded anchor is still readable" "$(on_chain 1 "$MISMATCH_H")" "$OLD_HASH"
 expect "the incident stays on record" "$(incidents anchor_mismatch "$MISMATCH_H")" 1
+call GET /ledger/blocks "$ADM"
+expect "but is no longer reported as open" "$(echo "$BODY" | j "[d['onchain']['open_incidents'], d['onchain']['unanchored']]")" "[[], 0]"
+call GET "/ledger/blocks/$MISMATCH_H/anchor"; expect "the receipt shows the new epoch" "$(echo "$BODY" | j "[d['status'], d['epoch']]")" "['ok', 2]"
 expect "all credentials VALID" "$(verdicts "${IDS[@]}")" " ${#IDS[@]} VALID "
 call GET /ledger/verify; expect "the ledger verifies" "$(echo "$BODY" | j "d['ok']")" True
 

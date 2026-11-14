@@ -232,6 +232,32 @@ async fn database_gauges(st: &AppState, out: &mut String) {
             0,
         ),
     }
+    // Only when on-chain anchoring is configured; otherwise the output is exactly as before.
+    if let Some(cfg) = &st.cfg.onchain {
+        let q = crate::onchain::gauges(&st.db, cfg);
+        if let Ok(Ok((unanchored, mismatched, incidents))) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), q).await
+        {
+            gauge(
+                out,
+                "acvs_onchain_unanchored_blocks",
+                "Sealed blocks with no on-chain anchor receipt yet",
+                unanchored,
+            );
+            gauge(
+                out,
+                "acvs_onchain_mismatched_blocks",
+                "Blocks whose on-chain receipt names a different hash (must be 0)",
+                mismatched,
+            );
+            gauge(
+                out,
+                "acvs_onchain_open_incidents",
+                "Findings the on-chain worker stopped on and that are not resolved (must be 0)",
+                incidents,
+            );
+        }
+    }
     gauge(
         out,
         "acvs_db_pool_connections",

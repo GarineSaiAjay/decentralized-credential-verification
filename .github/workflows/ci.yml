@@ -214,8 +214,13 @@ jobs:
         with: { submodules: true }
       - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with: { version: v1.9.0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: e2e/package-lock.json }
+      - run: npm ci
+        working-directory: e2e
       - run: ./scripts/gen-env.sh
-      - run: ./scripts/chain-test.sh
+      # CHAIN_TEST_UI: the browser check must run here, not be skipped.
+      - run: CHAIN_TEST_UI=required ./scripts/chain-test.sh
 
   pins:
     runs-on: ubuntu-latest

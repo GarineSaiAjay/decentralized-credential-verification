@@ -16,10 +16,11 @@ use uuid::Uuid;
 use crate::{
     audit,
     auth::{AuthUser, Role},
+    config::OnchainConfig,
     credentials::CredRow,
     crypto::{self, merkle, Step},
     error::{AppError, Res},
-    keys, page, timestamp, AppState,
+    keys, onchain, page, timestamp, AppState,
 };
 
 /// A block holds at most this many credentials, so one seal can never build an unbounded block. The rest wait
@@ -80,10 +81,17 @@ pub struct Anchor {
     pub timestamp: i64,
     /// Proof from an external time-stamping authority, if the block has one yet.
     pub external_timestamp: Option<Value>,
+    /// The block's anchor on a public chain. Absent unless on-chain anchoring is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onchain: Option<Value>,
     pub ok: bool,
 }
 
-pub async fn anchor_for(db: &PgPool, c: &CredRow) -> Res<Option<Anchor>> {
+pub async fn anchor_for(
+    db: &PgPool,
+    chain: Option<&OnchainConfig>,
+    c: &CredRow,
+) -> Res<Option<Anchor>> {
     let (Some(height), Some(index)) = (c.block_height, c.leaf_index) else {
         return Ok(None);
     };
@@ -98,6 +106,18 @@ pub async fn anchor_for(db: &PgPool, c: &CredRow) -> Res<Option<Anchor>> {
         && leaves.get(index as usize) == Some(&c.credential_hash)
         && merkle::verify(&c.credential_hash, &proof, &b.merkle_root);
     let external_timestamp = timestamp::summary(db, b.height, &b.block_hash).await?;
+    let onchain = match chain {
+        Some(cfg) => {
+            let found = onchain::receipts(db, cfg, &[b.height]).await?;
+            Some(onchain::view(
+                cfg,
+                found.get(&b.height),
+                &b.block_hash,
+                &b.merkle_root,
+            ))
+        }
+        None => None,
+    };
     Ok(Some(Anchor {
         height,
         block_hash: b.block_hash,
@@ -106,6 +126,7 @@ pub async fn anchor_for(db: &PgPool, c: &CredRow) -> Res<Option<Anchor>> {
         proof,
         timestamp: b.ts,
         external_timestamp,
+        onchain,
         ok,
     }))
 }
@@ -216,22 +237,36 @@ pub async fn blocks(
         .into_iter()
         .map(|(h, t, u, i)| (h, (t, u, i)))
         .collect();
+    let chain = st.cfg.onchain.as_ref();
+    let receipts = match chain {
+        Some(cfg) => onchain::receipts(&st.db, cfg, &heights).await?,
+        None => HashMap::new(),
+    };
     let blocks: Vec<Value> = rows
         .iter()
         .map(|b| {
-            json!({
+            let mut block = json!({
                 "height": b.height, "prev_hash": b.prev_hash, "merkle_root": b.merkle_root, "block_hash": b.block_hash,
                 "timestamp": b.ts, "credentials": b.leaves().len(),
                 "external_timestamp": stamps.get(&b.height).map(|(time, tsa, imprint)| json!({ "time": time, "tsa": tsa, "imprint_ok": *imprint == b.block_hash })),
-            })
+            });
+            if let Some(cfg) = chain {
+                block["onchain"] = onchain::view(cfg, receipts.get(&b.height), &b.block_hash, &b.merkle_root);
+            }
+            block
         })
         .collect();
-    Ok(Json(json!({
+    let mut out = json!({
         "pending_unanchored": pending.0,
         "timestamping": st.cfg.tsa.as_ref().map(|t| json!({ "url": t.url })),
         "blocks": blocks,
         "next": next,
-    })))
+    });
+    // Present only when on-chain anchoring is configured, so the answer is otherwise exactly as before.
+    if let Some(cfg) = chain {
+        out["onchain"] = onchain::overview(&st.db, cfg).await?;
+    }
+    Ok(Json(out))
 }
 
 /// Result of checking the whole chain. Only failures are kept, so it stays small however long the chain is.
@@ -247,9 +282,15 @@ pub struct ChainSummary {
 const CHECK_PAGE: i64 = 500;
 
 /// Checks up to `limit` consecutive blocks starting at height `from`: linkage, hash, Merkle root, signature,
-/// that the credentials stored for the block are exactly its leaves, and the outside timestamp. Uses a fixed
-/// number of queries however many blocks that is. Returns each block's report and the height to continue from.
-async fn check_range(db: &PgPool, from: i64, limit: i64) -> Res<(Vec<(bool, Value)>, Option<i64>)> {
+/// that the credentials stored for the block are exactly its leaves, the outside timestamp and, when on-chain
+/// anchoring is configured, the on-chain receipt. Uses a fixed number of queries however many blocks that is.
+/// Returns each block's report and the height to continue from.
+async fn check_range(
+    db: &PgPool,
+    chain: Option<&OnchainConfig>,
+    from: i64,
+    limit: i64,
+) -> Res<(Vec<(bool, Value)>, Option<i64>)> {
     let mut rows: Vec<Block> =
         sqlx::query_as("SELECT * FROM blocks WHERE height >= $1 ORDER BY height LIMIT $2")
             .bind(from)
@@ -301,6 +342,10 @@ async fn check_range(db: &PgPool, from: i64, limit: i64) -> Res<(Vec<(bool, Valu
     .await?
     .into_iter()
     .collect();
+    let receipts = match chain {
+        Some(cfg) => onchain::receipts(db, cfg, &heights).await?,
+        None => HashMap::new(),
+    };
 
     let mut reports = Vec::with_capacity(rows.len());
     let mut expected_height = from;
@@ -320,18 +365,26 @@ async fn check_range(db: &PgPool, from: i64, limit: i64) -> Res<(Vec<(bool, Valu
             Some(i) if *i == b.block_hash => "ok",
             Some(_) => "mismatch",
         };
-        let ok = block_ok && linked && leaves_ok && stamp != "mismatch";
-        reports.push((ok, json!({ "height": b.height, "ok": ok, "linked": linked, "block_ok": block_ok, "leaves_match_credentials": leaves_ok, "key_status": key_status, "external_timestamp": stamp })));
+        // Like the timestamp: a receipt must be about this very block; a block without one is merely not anchored yet.
+        let anchor =
+            chain.map(|_| onchain::status(receipts.get(&b.height), &b.block_hash, &b.merkle_root));
+        let ok =
+            block_ok && linked && leaves_ok && stamp != "mismatch" && anchor != Some("mismatch");
+        let mut report = json!({ "height": b.height, "ok": ok, "linked": linked, "block_ok": block_ok, "leaves_match_credentials": leaves_ok, "key_status": key_status, "external_timestamp": stamp });
+        if let Some(a) = anchor {
+            report["onchain"] = a.into();
+        }
+        reports.push((ok, report));
         prev = Some(b.block_hash.clone());
         expected_height = b.height + 1;
     }
     Ok((reports, next))
 }
 
-async fn check_all(db: &PgPool) -> Res<ChainSummary> {
+async fn check_all(db: &PgPool, chain: Option<&OnchainConfig>) -> Res<ChainSummary> {
     let (mut from, mut length, mut failed_total, mut failed) = (1, 0, 0, vec![]);
     loop {
-        let (reports, next) = check_range(db, from, CHECK_PAGE).await?;
+        let (reports, next) = check_range(db, chain, from, CHECK_PAGE).await?;
         for (ok, report) in &reports {
             length += 1;
             if !ok {
@@ -364,7 +417,7 @@ async fn chain_summary(st: &AppState) -> Res<(Arc<ChainSummary>, bool)> {
             return Ok((summary.clone(), true));
         }
     }
-    let summary = Arc::new(check_all(&st.db).await?);
+    let summary = Arc::new(check_all(&st.db, st.cfg.onchain.as_ref()).await?);
     *cache = Some((Instant::now(), summary.clone()));
     Ok((summary, false))
 }
@@ -386,7 +439,13 @@ pub async fn verify_chain(
 ) -> Res<Json<Value>> {
     let (summary, cached) = chain_summary(&st).await?;
     let from = q.from.unwrap_or(1).max(1);
-    let (reports, next_from) = check_range(&st.db, from, page::limit(q.limit, 100, 500)).await?;
+    let (reports, next_from) = check_range(
+        &st.db,
+        st.cfg.onchain.as_ref(),
+        from,
+        page::limit(q.limit, 100, 500),
+    )
+    .await?;
     Ok(Json(json!({
         "ok": summary.failed_total == 0,
         "length": summary.length,

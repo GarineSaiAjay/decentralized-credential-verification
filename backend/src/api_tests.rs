@@ -1963,3 +1963,319 @@ async fn only_a_valid_credential_can_be_exported(pool: PgPool) {
         .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// On-chain anchors (written by the separate acvs-chain worker; the backend only shows them)
+// ---------------------------------------------------------------------------------------------------------
+
+const CHAIN: i64 = 11155111;
+const CONTRACT: &str = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
+
+/// The same application and database, but configured to show on-chain anchors.
+fn with_onchain(api: &Api) -> Api {
+    let mut cfg = (*api.st.cfg).clone();
+    cfg.onchain = Some(crate::config::OnchainConfig {
+        chain_id: CHAIN,
+        contract: CONTRACT.into(),
+        explorer: Some("https://explorer.test".into()),
+    });
+    let st = AppState {
+        cfg: Arc::new(cfg),
+        chain_cache: Arc::default(),
+        ..api.st.clone()
+    };
+    Api {
+        app: router(st.clone()),
+        st,
+    }
+}
+
+/// Writes a receipt the way the worker does. `hash` is what the contract is said to hold for the block.
+async fn receipt(pool: &PgPool, chain_id: i64, contract: &str, height: i64, hash: Option<&str>) {
+    sqlx::query(
+        "INSERT INTO chain_anchors (chain_id, contract, block_height, block_hash, merkle_root, leaf_count, epoch, tx_hash, chain_block, anchored_at)
+         SELECT $1, $2, height, coalesce($4, block_hash), merkle_root, jsonb_array_length(leaves), 1, '0xfeed' || height, 100 + height, now()
+         FROM blocks WHERE height = $3",
+    )
+    .bind(chain_id)
+    .bind(contract)
+    .bind(height)
+    .bind(hash)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Two sealed blocks with one credential each; returns the credential ids.
+async fn two_blocks(api: &Api, t: &[String; 5]) -> [String; 2] {
+    let a = api.issue(t).await;
+    assert_eq!(
+        api.post("/ledger/seal", Some(&t[3]), json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let b = api.issue(t).await;
+    assert_eq!(
+        api.post("/ledger/seal", Some(&t[3]), json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    [a, b]
+}
+
+#[sqlx::test]
+async fn without_the_setting_nothing_about_a_chain_is_shown_even_if_receipts_exist(pool: PgPool) {
+    let api = start(pool.clone()).await;
+    let t = api.everyone().await;
+    let [a, _] = two_blocks(&api, &t).await;
+    let before = [
+        api.get(&format!("/verify/{a}"), None).await.body,
+        api.get("/ledger/blocks", Some(&t[3])).await.body,
+        api.get("/ledger/verify", None).await.body,
+    ];
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    receipt(&pool, CHAIN, CONTRACT, 2, Some(&"0".repeat(64))).await;
+
+    let after = [
+        api.get(&format!("/verify/{a}"), None).await.body,
+        api.get("/ledger/blocks", Some(&t[3])).await.body,
+        api.get("/ledger/verify", None).await.body,
+    ];
+    for (b, a) in before.iter().zip(&after) {
+        let mut b = b.clone();
+        let mut a = a.clone();
+        // The only field that differs between two calls is the time of the check.
+        for v in [&mut a, &mut b] {
+            if let Some(o) = v.as_object_mut() {
+                o.remove("checked_at");
+            }
+        }
+        assert_eq!(a, b, "a response changed although on-chain display is off");
+    }
+    assert!(!after[0]["anchor"]
+        .as_object()
+        .unwrap()
+        .contains_key("onchain"));
+    assert!(!after[1].as_object().unwrap().contains_key("onchain"));
+    assert!(!after[1]["blocks"][0]
+        .as_object()
+        .unwrap()
+        .contains_key("onchain"));
+    assert!(!after[2]["blocks"][0]
+        .as_object()
+        .unwrap()
+        .contains_key("onchain"));
+    assert_eq!(
+        after[2]["ok"], true,
+        "a stray receipt must not fail the chain check"
+    );
+
+    let r = api.get("/ledger/blocks/1/anchor", None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(r.body["error"].as_str().unwrap().contains("not configured"));
+}
+
+#[sqlx::test]
+async fn a_block_without_a_receipt_is_simply_not_anchored_yet(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, _] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+
+    let v = api.get(&format!("/verify/{a}"), None).await.body;
+    assert_eq!(v["verdict"], "VALID");
+    assert_eq!(v["anchor"]["onchain"], json!({ "status": "none" }));
+    assert_eq!(v["anchor"]["ok"], true);
+
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    assert_eq!(l["blocks"][0]["onchain"]["status"], "none");
+    assert_eq!(l["onchain"]["unanchored"], 2);
+    assert_eq!(l["onchain"]["chain_id"], CHAIN);
+    assert_eq!(l["onchain"]["contract"], CONTRACT);
+    assert_eq!(l["onchain"]["open_incidents"], json!([]));
+
+    let c = api.get("/ledger/verify", None).await.body;
+    assert_eq!(c["ok"], true);
+    assert_eq!(c["blocks"][0]["onchain"], "none");
+
+    let r = api.get("/ledger/blocks/1/anchor", None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(r.body["error"]
+        .as_str()
+        .unwrap()
+        .contains("not been anchored"));
+    assert_eq!(
+        api.get("/ledger/blocks/9/anchor", None).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[sqlx::test]
+async fn a_receipt_is_shown_with_where_to_find_the_anchor(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, b] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    // Receipts for another network or another contract say nothing about this one.
+    receipt(&pool, 31337, CONTRACT, 2, None).await;
+    receipt(
+        &pool,
+        CHAIN,
+        "0x00000000000000000000000000000000000000aa",
+        2,
+        None,
+    )
+    .await;
+
+    let v = api.get(&format!("/verify/{a}"), None).await.body;
+    let o = &v["anchor"]["onchain"];
+    assert_eq!(o["status"], "ok");
+    assert_eq!(o["chain_id"], CHAIN);
+    assert_eq!(o["contract"], CONTRACT);
+    assert_eq!(o["epoch"], 1);
+    assert_eq!(o["tx_hash"], "0xfeed1");
+    assert_eq!(o["chain_block"], 101);
+    assert_eq!(o["explorer_url"], "https://explorer.test/tx/0xfeed1");
+    assert!(o["anchored_at"].is_string());
+    assert_eq!(
+        api.get(&format!("/verify/{b}"), None).await.body["anchor"]["onchain"],
+        json!({ "status": "none" })
+    );
+
+    // Newest block first.
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    assert_eq!(l["blocks"][0]["onchain"]["status"], "none");
+    assert_eq!(l["blocks"][1]["onchain"]["status"], "ok");
+    assert_eq!(l["onchain"]["unanchored"], 1);
+    assert_eq!(
+        l["onchain"]["explorer_url"],
+        format!("https://explorer.test/address/{CONTRACT}")
+    );
+
+    let c = api.get("/ledger/verify", None).await.body;
+    assert_eq!(c["ok"], true);
+    assert_eq!(
+        (
+            c["blocks"][0]["onchain"].clone(),
+            c["blocks"][1]["onchain"].clone()
+        ),
+        (json!("ok"), json!("none"))
+    );
+
+    // Anyone may read a block's receipt, with the values the contract must hold.
+    let r = api.get("/ledger/blocks/1/anchor", None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["status"], "ok");
+    assert_eq!(r.body["height"], 1);
+    assert_eq!(r.body["block"], r.body["anchored"]);
+    assert_eq!(r.body["block"]["leaf_count"], 1);
+    assert_eq!(r.body["block"]["block_hash"], v["anchor"]["block_hash"]);
+}
+
+#[sqlx::test]
+async fn a_receipt_for_a_different_hash_fails_the_ledger_check_but_not_the_credential(
+    pool: PgPool,
+) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, b] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    receipt(&pool, CHAIN, CONTRACT, 2, Some(&"0".repeat(64))).await;
+
+    let c = api.get("/ledger/verify", None).await.body;
+    assert_eq!(c["ok"], false);
+    assert_eq!(c["failed_blocks"], json!([2]));
+    assert_eq!(c["blocks"][0]["ok"], true);
+    assert_eq!(c["blocks"][1]["ok"], false);
+    assert_eq!(c["blocks"][1]["onchain"], "mismatch");
+    // Everything else about that block is still in order: only the receipt disagrees.
+    assert_eq!(c["blocks"][1]["block_ok"], true);
+    assert_eq!(c["blocks"][1]["linked"], true);
+
+    // The chain never changes a verdict.
+    for id in [&a, &b] {
+        assert_eq!(api.verdict(id).await, "VALID");
+    }
+    let v = api.get(&format!("/verify/{b}"), None).await.body;
+    assert_eq!(v["anchor"]["onchain"]["status"], "mismatch");
+    assert_eq!(v["anchor"]["ok"], true);
+
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    assert_eq!(l["blocks"][0]["onchain"]["status"], "mismatch");
+
+    let r = api.get("/ledger/blocks/2/anchor", None).await.body;
+    assert_eq!(r["status"], "mismatch");
+    assert_ne!(r["block"]["block_hash"], r["anchored"]["block_hash"]);
+
+    // With the display off, the same database still verifies.
+    assert_eq!(off.get("/ledger/verify", None).await.body["ok"], true);
+}
+
+#[sqlx::test]
+async fn an_incident_is_shown_until_the_worker_gets_past_it(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    sqlx::query(
+        "INSERT INTO chain_incidents (chain_id, contract, kind, block_height, detail, fingerprint, created_at)
+         VALUES ($1, $2, 'anchor_mismatch', 2, $3, 'f1', now() + interval '1 second'),
+                (31337, $2, 'height_gap', 2, '{}', 'f2', now() + interval '1 second')",
+    )
+    .bind(CHAIN)
+    .bind(CONTRACT)
+    .bind(json!({ "note": "restored an older backup" }))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    let open = l["onchain"]["open_incidents"].as_array().unwrap();
+    assert_eq!(open.len(), 1, "only this chain's incident: {open:?}");
+    assert_eq!(open[0]["kind"], "anchor_mismatch");
+    assert_eq!(open[0]["height"], 2);
+    assert_eq!(open[0]["note"], "restored an older backup");
+    // An incident is about anchoring, not about the ledger itself.
+    assert_eq!(api.get("/ledger/verify", None).await.body["ok"], true);
+
+    // A receipt written after the incident means the worker is anchoring again.
+    sqlx::query(
+        "INSERT INTO chain_anchors (chain_id, contract, block_height, block_hash, merkle_root, leaf_count, epoch, tx_hash, chain_block, anchored_at, created_at)
+         SELECT $1, $2, height, block_hash, merkle_root, 1, 2, '0xbeef', 200, now(), now() + interval '2 seconds' FROM blocks WHERE height = 2",
+    )
+    .bind(CHAIN)
+    .bind(CONTRACT)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    assert_eq!(l["onchain"]["open_incidents"], json!([]));
+    assert_eq!(l["onchain"]["unanchored"], 0);
+    assert_eq!(l["blocks"][0]["onchain"]["epoch"], 2);
+}
+
+#[sqlx::test]
+async fn the_block_list_still_needs_a_sign_in_and_the_receipt_does_not(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    assert_eq!(
+        api.get("/ledger/blocks", None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        api.get("/ledger/blocks/1/anchor", None).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        api.get("/ledger/blocks/abc/anchor", None).await.status,
+        StatusCode::BAD_REQUEST
+    );
+}

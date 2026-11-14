@@ -76,6 +76,24 @@ At start it refuses to run if the node is a different network than `CHAIN_ID`, i
 | `CHAIN_RPC_TIMEOUT_SECS` | 20 | Longest wait for one answer from the node |
 | `CHAIN_BATCH_SIZE` | 25 | Most blocks anchored by one transaction |
 
+## What the backend shows
+
+The backend never talks to the chain. With `deploy/chain.yml` it is given `CHAIN_ID`,
+`CHAIN_ANCHOR_CONTRACT` and (optionally) `CHAIN_EXPLORER_URL`, and then shows what the worker recorded:
+
+| Where | What |
+|---|---|
+| `GET /api/v1/verify/:id` | `anchor.onchain`: `status` (`none`, `ok`, `mismatch`) and, once anchored, chain, contract, epoch, transaction |
+| `GET /api/v1/ledger/blocks` | The same per block, plus an `onchain` summary: blocks still waiting and open incidents |
+| `GET /api/v1/ledger/verify` | `onchain` per block. A receipt that names a different hash than its block fails the check |
+| `GET /api/v1/ledger/blocks/:n/anchor` | Public: one block's receipt, with the values the contract must hold |
+| Ledger and Verify pages | An "On-chain" column and an "On-chain anchor" line, linked to the explorer when one is set |
+| Metrics | `acvs_onchain_unanchored_blocks`, `acvs_onchain_mismatched_blocks`, `acvs_onchain_open_incidents` |
+
+A receipt never changes a credential's verdict. Without those settings none of these fields exist and
+every response is exactly as it was before. A half-finished setting (for example `CHAIN_ID` without the
+contract) is logged as a warning and treated as "off"; it never stops the backend.
+
 ## The two keys
 
 | Key | Where | Can |

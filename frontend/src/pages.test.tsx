@@ -279,6 +279,74 @@ describe('lists that arrive a page at a time', () => {
   });
 });
 
+describe('on-chain anchors', () => {
+  const block = (h: number, onchain?: unknown) => ({ height: h, credentials: 1, merkle_root: 'a'.repeat(64), block_hash: 'b'.repeat(64), timestamp: 1700000000 + h, external_timestamp: null, ...(onchain ? { onchain } : {}) });
+  const anchored = { status: 'ok', chain_id: 11155111, contract: '0xabc', epoch: 1, tx_hash: '0x' + 'f'.repeat(64), chain_block: 9, anchored_at: '2026-11-14T10:00:00Z', explorer_url: 'https://explorer.test/tx/0xfff' };
+  const overview = (over: Record<string, unknown> = {}) => ({ chain_id: 11155111, contract: '0xabc', explorer_url: null, unanchored: 0, open_incidents: [], ...over });
+  const anchor = (onchain?: unknown) => ({ height: 1, timestamp: 1700000000, block_hash: 'b'.repeat(64), merkle_root: 'a'.repeat(64), proof: [], leaf_index: 0, external_timestamp: null, ok: true, ...(onchain ? { onchain } : {}) });
+
+  it('shows nothing about a chain when the server reports none', async () => {
+    serve({ body: { blocks: [block(1)], next: null, pending_unanchored: 0, timestamping: null } });
+    render(<Ledger role="auditor" />);
+    await screen.findByText('Sealed');
+    expect(screen.queryByText('On-chain')).not.toBeInTheDocument();
+    expect(screen.queryByText(/public chain/)).not.toBeInTheDocument();
+  });
+
+  it('lists each block as anchored, waiting or mismatched, and links to the transaction', async () => {
+    serve({ body: { blocks: [block(3, { status: 'none' }), block(2, { status: 'mismatch' }), block(1, anchored)], next: null, pending_unanchored: 0, timestamping: null, onchain: overview({ unanchored: 1 }) } });
+    render(<Ledger role="auditor" />);
+    expect(await screen.findByText('On-chain')).toBeInTheDocument();
+    expect(screen.getByText('pending')).toBeInTheDocument();
+    expect(screen.getByText('MISMATCH')).toHaveClass('bad');
+    const link = screen.getByRole('link', { name: new Date('2026-11-14T10:00:00Z').toLocaleString() });
+    expect(link).toHaveAttribute('href', 'https://explorer.test/tx/0xfff');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByText(/1 block\(s\) waiting to be anchored/)).toBeInTheDocument();
+  });
+
+  it('warns when the worker has stopped on an incident', async () => {
+    serve({ body: { blocks: [block(2, { status: 'none' })], next: null, pending_unanchored: 0, timestamping: null, onchain: overview({ unanchored: 1, open_incidents: [{ kind: 'anchor_mismatch', height: 2, at: '2026-11-14T10:00:00Z', note: 'An older backup was restored.' }] }) } });
+    render(<Ledger role="auditor" />);
+    expect(await screen.findByText(/On-chain anchoring has stopped at block 2 \(anchor mismatch\)\. An older backup was restored\. Credentials are not affected\./)).toHaveClass('err');
+  });
+
+  it('says so when every block is anchored, without a link when no explorer is set', async () => {
+    serve({ body: { blocks: [block(1, { ...anchored, explorer_url: null })], next: null, pending_unanchored: 0, timestamping: null, onchain: overview() } });
+    render(<Ledger role="auditor" />);
+    expect(await screen.findByText(/Every block is anchored\./)).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(screen.getByText(new Date('2026-11-14T10:00:00Z').toLocaleString())).toHaveClass('good');
+  });
+
+  it('shows the on-chain anchor on the verification page only when the server reports one', async () => {
+    serve({ body: verification({ anchor: anchor() }) });
+    const { unmount } = render(<Verify id="c1" />);
+    await screen.findByText('Ledger anchor');
+    expect(screen.queryByText('On-chain anchor')).not.toBeInTheDocument();
+    unmount();
+
+    serve({ body: verification({ anchor: anchor(anchored) }) });
+    render(<Verify id="c1" />);
+    expect(await screen.findByText('On-chain anchor')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /anchored .* on chain 11155111 \(epoch 1\), transaction 0xffffffffffffffff…/ });
+    expect(link).toHaveAttribute('href', 'https://explorer.test/tx/0xfff');
+  });
+
+  it('tells a waiting block from a mismatch on the verification page', async () => {
+    serve({ body: verification({ anchor: anchor({ status: 'none' }) }) });
+    const { unmount } = render(<Verify id="c1" />);
+    expect(await screen.findByText('not yet anchored on a public chain')).toHaveClass('muted');
+    unmount();
+
+    serve({ body: verification({ anchor: anchor({ status: 'mismatch' }) }) });
+    render(<Verify id="c1" />);
+    expect(await screen.findByText('MISMATCH: the on-chain anchor is not for this block')).toHaveClass('bad');
+    // The verdict is the server's and is not changed by the anchor.
+    expect(screen.getByText('VALID')).toBeInTheDocument();
+  });
+});
+
 describe('ImportCredentials', () => {
   const file = (text: string) => new File([text], 'c.csv', { type: 'text/csv' });
   const HEAD = 'student_id,student_name,program,graduation_date,gpa,honors';

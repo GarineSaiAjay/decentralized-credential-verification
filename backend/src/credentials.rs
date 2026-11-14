@@ -1038,7 +1038,7 @@ async fn load_core(st: &AppState, id: Uuid) -> Res<(CredRow, Evaluation, Option<
 
 pub async fn assess(st: &AppState, id: Uuid) -> Res<(CredRow, Assessment)> {
     let (c, ev, term) = load_core(st, id).await?;
-    let anchor = crate::ledger::anchor_for(&st.db, &c).await?;
+    let anchor = crate::ledger::anchor_for(&st.db, st.cfg.onchain.as_ref(), &c).await?;
     let mut verdict = verdict(&c, &ev, term.as_ref());
     if verdict == "VALID" && anchor.as_ref().is_some_and(|a| !a.ok) {
         verdict = "INVALID";

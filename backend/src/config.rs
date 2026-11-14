@@ -12,6 +12,51 @@ pub struct TsaConfig {
     pub timeout: Duration,
 }
 
+/// Where the optional on-chain worker anchors sealed blocks. Used for display only: the backend never talks
+/// to a chain. `contract` is lower-case, as the worker stores it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnchainConfig {
+    pub chain_id: i64,
+    pub contract: String,
+    /// Base address of a block explorer for links, e.g. `https://sepolia.etherscan.io` (optional).
+    pub explorer: Option<String>,
+}
+
+/// Reads the on-chain display settings. `Err` says why they are unusable; the caller then runs with the
+/// display off instead of refusing to start, so a half-finished worker setup can never stop the backend.
+pub fn onchain_config(
+    chain_id: Option<String>,
+    contract: Option<String>,
+    explorer: Option<String>,
+) -> Result<Option<OnchainConfig>, String> {
+    let (chain_id, contract) = match (chain_id, contract) {
+        (None, None) => return Ok(None),
+        (Some(i), Some(c)) => (i, c),
+        _ => return Err("CHAIN_ID and CHAIN_ANCHOR_CONTRACT must be set together".into()),
+    };
+    let chain_id = chain_id
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or("CHAIN_ID must be a positive whole number")?;
+    let hex = contract
+        .strip_prefix("0x")
+        .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or("CHAIN_ANCHOR_CONTRACT must be 0x followed by 40 hex digits")?;
+    let explorer = match explorer {
+        None => None,
+        Some(e) if e.starts_with("https://") || e.starts_with("http://") => {
+            Some(e.trim_end_matches('/').to_string())
+        }
+        Some(_) => return Err("CHAIN_EXPLORER_URL must start with https:// or http://".into()),
+    };
+    Ok(Some(OnchainConfig {
+        chain_id,
+        contract: format!("0x{}", hex.to_ascii_lowercase()),
+        explorer,
+    }))
+}
+
 /// Request limits. `*_per_min` are per minute; the login-failure limit is per account per window.
 #[derive(Clone)]
 pub struct RateConfig {
@@ -58,6 +103,8 @@ pub struct Config {
     pub metrics_bind: Option<String>,
     /// How long the public whole-chain check may be served from memory (CHAIN_VERIFY_CACHE_SECS; 0 = never).
     pub chain_cache_secs: u64,
+    /// Set when sealed blocks are also anchored on a public chain (CHAIN_ID + CHAIN_ANCHOR_CONTRACT).
+    pub onchain: Option<OnchainConfig>,
 }
 
 /// An address range such as `172.29.250.0/24`; a bare address is a range of one.
@@ -292,6 +339,15 @@ impl Config {
             require_mfa_roles,
             metrics_bind: metrics_bind()?,
             chain_cache_secs: bounded("CHAIN_VERIFY_CACHE_SECS", 30, 0, 3600)?,
+            onchain: onchain_config(
+                optional("CHAIN_ID"),
+                optional("CHAIN_ANCHOR_CONTRACT"),
+                optional("CHAIN_EXPLORER_URL"),
+            )
+            .unwrap_or_else(|why| {
+                tracing::warn!("on-chain anchoring is not shown: {why}");
+                None
+            }),
         })
     }
 }
@@ -326,6 +382,67 @@ impl Config {
             require_mfa_roles: vec![],
             metrics_bind: None,
             chain_cache_secs: 0,
+            onchain: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod onchain_tests {
+    use super::*;
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn unset_means_off() {
+        assert_eq!(onchain_config(None, None, None), Ok(None));
+        // An explorer address alone switches nothing on.
+        assert_eq!(onchain_config(None, None, s("https://x.test")), Ok(None));
+    }
+
+    #[test]
+    fn a_complete_setting_is_normalised() {
+        let c = onchain_config(
+            s("11155111"),
+            s("0x5FbDB2315678afecb367f032d93F642f64180aa3"),
+            s("https://sepolia.etherscan.io/"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.chain_id, 11155111);
+        // Lower-case, as the worker stores it, so the two always compare equal.
+        assert_eq!(c.contract, "0x5fbdb2315678afecb367f032d93f642f64180aa3");
+        assert_eq!(c.explorer.as_deref(), Some("https://sepolia.etherscan.io"));
+    }
+
+    #[test]
+    fn unusable_settings_are_reported_not_guessed() {
+        let addr = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+        for (id, contract, explorer) in [
+            (s("31337"), None, None),
+            (None, s(addr), None),
+            (s("0"), s(addr), None),
+            (s("-1"), s(addr), None),
+            (s("sepolia"), s(addr), None),
+            (
+                s("31337"),
+                s("5FbDB2315678afecb367f032d93F642f64180aa3"),
+                None,
+            ),
+            (s("31337"), s("0x5FbDB2"), None),
+            (
+                s("31337"),
+                s("0xZZbDB2315678afecb367f032d93F642f64180aa3"),
+                None,
+            ),
+            (s("31337"), s(addr), s("javascript:alert(1)")),
+        ] {
+            assert!(
+                onchain_config(id.clone(), contract.clone(), explorer.clone()).is_err(),
+                "{id:?} {contract:?} {explorer:?}"
+            );
         }
     }
 }
