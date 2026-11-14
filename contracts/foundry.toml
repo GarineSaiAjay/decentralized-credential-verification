@@ -1,0 +1,24 @@
+# ACVS on-chain layer. See docs in ../README.md and contracts/README.md.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+# The Merkle tests read vectors produced by the Rust ledger code.
+fs_permissions = [{ access = "read", path = "./test/vectors" }]
+
+[profile.default.fuzz]
+runs = 512
+
+[fmt]
+line_length = 110
+
+[lint]
+# Batches are all-or-nothing on purpose, so a revert inside their loop is the intended behaviour.
+# The only narrowing casts are block.timestamp to uint64 and a loop counter bounded by calldata length.
+exclude_lints = ["require-revert-in-loop", "unsafe-typecast"]

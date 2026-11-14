@@ -27,3 +27,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  # The contract libraries (forge-std, OpenZeppelin) are submodules pinned to a release commit.
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule: { interval: weekly }
