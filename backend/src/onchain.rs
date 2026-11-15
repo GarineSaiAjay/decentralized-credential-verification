@@ -207,6 +207,7 @@ mod tests {
             chain_id: 11155111,
             contract: "0xabc".into(),
             explorer: None,
+            issuer: None,
         };
         let r = receipt("h", "r");
         assert_eq!(view(&cfg, None, "h", "r"), json!({ "status": "none" }));

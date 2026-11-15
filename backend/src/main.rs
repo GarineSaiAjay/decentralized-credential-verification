@@ -98,6 +98,7 @@ pub fn router(st: AppState) -> Router {
         .route("/api/v1/credentials/:id/qr", get(credentials::qr))
         .route("/api/v1/credentials/:id/export", get(vc::export))
         .route("/api/v1/vc/context", get(vc::context))
+        .route("/.well-known/did.json", get(vc::did_document))
         .route("/api/v1/ledger/verify", get(ledger::verify_chain))
         .route(
             "/api/v1/ledger/blocks/:height/timestamp",
@@ -123,6 +124,7 @@ pub fn router(st: AppState) -> Router {
             "/api/v1/credentials/:id/personal-challenge",
             get(credentials::personal_challenge),
         )
+        .route("/api/v1/credentials/:id/export-full", get(vc::export_full))
         .route("/api/v1/keys", get(keys::list))
         .route("/api/v1/ledger/blocks", get(ledger::blocks))
         .route("/api/v1/audit", get(audit::list))

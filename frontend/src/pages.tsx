@@ -69,6 +69,13 @@ const OnChain = ({ o, long = false }: { o: any; long?: boolean }) => {
     ? <a className="good" href={o.explorer_url} target="_blank" rel="noopener noreferrer" title={o.tx_hash}>{text}</a>
     : <span className="good" title={o.tx_hash}>{text}</span>;
 };
+/** Saves a JSON value as a file. Used where a plain link cannot be, because the request needs the session. */
+function saveJson(data: unknown, name: string) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
 const Card = ({ title, children }: { title: string; children: ReactNode }) => (
   <div className="box"><div className="box-title">{title}</div><div className="box-body">{children}</div></div>
 );
@@ -342,6 +349,7 @@ export function CredDetail({ id, role }: { id: string; role: Role }) {
               {role === 'faculty' && ['REVOKED', 'REJECTED', 'INVALID'].includes(c.verdict) && (!c.superseded_by || ['rejected', 'revoked'].includes(c.superseded_by.status)) && <button onClick={() => window.confirm('Create a new credential from this one? It goes through every approval stage again.') && run(() => api<{ id: string }>('POST', `/credentials/${id}/reissue`, {}).then((r) => go(`/c/${r.id}`)), 'Re-issued')}>Re-issue</button>}
               {role === 'university_admin' && c.status === 'issued' && <button className="danger" onClick={() => { const r = reason('Reason for revocation'); r && run(() => api('POST', `/credentials/${id}/revoke`, { reason: r }), 'Revoked', reload); }}>Revoke</button>}
               <a className="btn" href={`#/verify/${id}/${short(c.credential_hash, 16)}`}>Public verification page</a>
+              {c.full_export && c.verdict === 'VALID' && <button title="Includes the student ID, so every field can be proven without this server. Hand it to the graduate; it is not public." onClick={() => run(async () => saveJson(await api('GET', `/credentials/${id}/export-full`), 'credential-full.json'), 'Full credential file downloaded (this is recorded in the audit log)')}>Download full file for the graduate</button>}
             </div>
           </Card>
           <Card title="Signatures"><SigTable sigs={c.signatures} /></Card>

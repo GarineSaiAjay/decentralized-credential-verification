@@ -20,6 +20,42 @@ pub struct OnchainConfig {
     pub contract: String,
     /// Base address of a block explorer for links, e.g. `https://sepolia.etherscan.io` (optional).
     pub explorer: Option<String>,
+    /// Where this university is listed, so an exported credential can say so (optional).
+    pub issuer: Option<IssuerRef>,
+}
+
+/// This university's entry in the on-chain issuer registry: the registry contract and the issuer's id in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IssuerRef {
+    pub registry: String,
+    pub issuer_id: i64,
+}
+
+fn contract_address(name: &str, value: &str) -> Result<String, String> {
+    value
+        .strip_prefix("0x")
+        .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|h| format!("0x{}", h.to_ascii_lowercase()))
+        .ok_or_else(|| format!("{name} must be 0x followed by 40 hex digits"))
+}
+
+/// Reads CHAIN_REGISTRY_CONTRACT and CHAIN_ISSUER_ID, which belong together.
+pub fn issuer_ref(
+    registry: Option<String>,
+    issuer_id: Option<String>,
+) -> Result<Option<IssuerRef>, String> {
+    match (registry, issuer_id) {
+        (None, None) => Ok(None),
+        (Some(r), Some(i)) => Ok(Some(IssuerRef {
+            registry: contract_address("CHAIN_REGISTRY_CONTRACT", &r)?,
+            issuer_id: i
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or("CHAIN_ISSUER_ID must be a positive whole number")?,
+        })),
+        _ => Err("CHAIN_REGISTRY_CONTRACT and CHAIN_ISSUER_ID must be set together".into()),
+    }
 }
 
 /// Reads the on-chain display settings. `Err` says why they are unusable; the caller then runs with the
@@ -39,10 +75,7 @@ pub fn onchain_config(
         .ok()
         .filter(|n| *n > 0)
         .ok_or("CHAIN_ID must be a positive whole number")?;
-    let hex = contract
-        .strip_prefix("0x")
-        .filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or("CHAIN_ANCHOR_CONTRACT must be 0x followed by 40 hex digits")?;
+    let contract = contract_address("CHAIN_ANCHOR_CONTRACT", &contract)?;
     let explorer = match explorer {
         None => None,
         Some(e) if e.starts_with("https://") || e.starts_with("http://") => {
@@ -52,8 +85,9 @@ pub fn onchain_config(
     };
     Ok(Some(OnchainConfig {
         chain_id,
-        contract: format!("0x{}", hex.to_ascii_lowercase()),
+        contract,
         explorer,
+        issuer: None,
     }))
 }
 
@@ -344,6 +378,16 @@ impl Config {
                 optional("CHAIN_ANCHOR_CONTRACT"),
                 optional("CHAIN_EXPLORER_URL"),
             )
+            .and_then(|c| match c {
+                Some(mut c) => {
+                    c.issuer = issuer_ref(
+                        optional("CHAIN_REGISTRY_CONTRACT"),
+                        optional("CHAIN_ISSUER_ID"),
+                    )?;
+                    Ok(Some(c))
+                }
+                None => Ok(None),
+            })
             .unwrap_or_else(|why| {
                 tracing::warn!("on-chain anchoring is not shown: {why}");
                 None
@@ -415,6 +459,28 @@ mod onchain_tests {
         // Lower-case, as the worker stores it, so the two always compare equal.
         assert_eq!(c.contract, "0x5fbdb2315678afecb367f032d93f642f64180aa3");
         assert_eq!(c.explorer.as_deref(), Some("https://sepolia.etherscan.io"));
+    }
+
+    #[test]
+    fn the_registry_entry_needs_both_values() {
+        let addr = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+        assert_eq!(issuer_ref(None, None), Ok(None));
+        assert_eq!(
+            issuer_ref(s(addr), s("1")),
+            Ok(Some(IssuerRef {
+                registry: "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512".into(),
+                issuer_id: 1
+            }))
+        );
+        for (r, i) in [
+            (s(addr), None),
+            (None, s("1")),
+            (s(addr), s("0")),
+            (s(addr), s("one")),
+            (s("0x12"), s("1")),
+        ] {
+            assert!(issuer_ref(r.clone(), i.clone()).is_err(), "{r:?} {i:?}");
+        }
     }
 
     #[test]

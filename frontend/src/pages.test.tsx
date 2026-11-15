@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getSession } from './api';
-import { Audit, CredList, ImportCredentials, Ledger, Login, ResetPassword, Verify } from './pages';
+import { Audit, CredDetail, CredList, ImportCredentials, Ledger, Login, ResetPassword, Verify } from './pages';
 
 type Reply = { status?: number; body: unknown };
 /** Answers fetch calls in order; returns the mock so tests can inspect what was sent. */
@@ -344,6 +344,47 @@ describe('on-chain anchors', () => {
     expect(await screen.findByText('MISMATCH: the on-chain anchor is not for this block')).toHaveClass('bad');
     // The verdict is the server's and is not changed by the anchor.
     expect(screen.getByText('VALID')).toBeInTheDocument();
+  });
+});
+
+describe('the full export for the graduate', () => {
+  const cred = (over: Record<string, unknown> = {}) => ({
+    id: 'c1', student_id: 'S-1', student_name: 'Ada Lovelace', program: 'BSc', graduation_date: '2025-05-15', gpa: null, honors: null,
+    credential_hash: 'ab'.repeat(32), status: 'issued', verdict: 'VALID', block_height: 1, leaf_index: 0, revoke_reason: null,
+    supersedes: null, superseded_by: null, termination: null, signatures: [], checks: {}, approvers: [], ...over,
+  });
+  const challenge = { status: 404, body: { error: 'nothing to sign' } };
+
+  it('is not offered unless the server says the export exists', async () => {
+    serve({ body: cred() }, challenge);
+    render(<CredDetail id="c1" role="registrar" />);
+    await screen.findByText('Public verification page');
+    expect(screen.queryByRole('button', { name: 'Download full file for the graduate' })).not.toBeInTheDocument();
+  });
+
+  it('is not offered for a credential that is not VALID', async () => {
+    serve({ body: cred({ full_export: true, verdict: 'REVOKED', status: 'revoked' }) }, challenge);
+    render(<CredDetail id="c1" role="registrar" />);
+    await screen.findByText('Public verification page');
+    expect(screen.queryByRole('button', { name: 'Download full file for the graduate' })).not.toBeInTheDocument();
+  });
+
+  it('fetches the file with the session and saves it', async () => {
+    // The page asks what there is to sign once before and once after the credential has loaded.
+    const f = serve({ body: cred({ full_export: true }) }, challenge, challenge, { body: { id: 'urn:uuid:c1', hashedContent: '{}' } });
+    const saved: Blob[] = [];
+    // jsdom has no object URLs; these two stand in for the browser's.
+    Object.assign(URL, { createObjectURL: (b: Blob) => { saved.push(b); return 'blob:x'; }, revokeObjectURL: () => {} });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(<CredDetail id="c1" role="registrar" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Download full file for the graduate' }));
+    expect(await screen.findByText(/recorded in the audit log/)).toBeInTheDocument();
+    expect(f.mock.calls[3][0]).toBe('/api/v1/credentials/c1/export-full');
+    expect(f.mock.calls[3][1].headers.Authorization).toBeUndefined(); // no session in this test; with one, api() adds it
+    expect(click).toHaveBeenCalledOnce();
+    const text = await new Promise<string>((done) => { const r = new FileReader(); r.onload = () => done(String(r.result)); r.readAsText(saved[0]); });
+    expect(JSON.parse(text)).toEqual({ id: 'urn:uuid:c1', hashedContent: '{}' });
+    click.mockRestore();
   });
 });
 

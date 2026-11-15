@@ -1970,6 +1970,7 @@ async fn only_a_valid_credential_can_be_exported(pool: PgPool) {
 
 const CHAIN: i64 = 11155111;
 const CONTRACT: &str = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
+const REGISTRY: &str = "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512";
 
 /// The same application and database, but configured to show on-chain anchors.
 fn with_onchain(api: &Api) -> Api {
@@ -1978,6 +1979,10 @@ fn with_onchain(api: &Api) -> Api {
         chain_id: CHAIN,
         contract: CONTRACT.into(),
         explorer: Some("https://explorer.test".into()),
+        issuer: Some(crate::config::IssuerRef {
+            registry: REGISTRY.into(),
+            issuer_id: 7,
+        }),
     });
     let st = AppState {
         cfg: Arc::new(cfg),
@@ -2278,4 +2283,360 @@ async fn the_block_list_still_needs_a_sign_in_and_the_receipt_does_not(pool: PgP
         api.get("/ledger/blocks/abc/anchor", None).await.status,
         StatusCode::BAD_REQUEST
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Exports for checking a credential without this server: on-chain evidence, the full export, did:web
+// ---------------------------------------------------------------------------------------------------------
+
+impl Api {
+    /// A GET outside `/api/v1` (the DID document lives at the site root).
+    async fn get_root(&self, uri: &str) -> Res {
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(
+            "203.0.113.9:4000".parse::<SocketAddr>().unwrap(),
+        ));
+        let resp = self.app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        Res {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }
+    }
+}
+
+/// Recomputes a Merkle root the way the LedgerAnchor contract does: the side of each sibling follows from
+/// the leaf's index and the number of leaves, not from anything the proof says.
+fn root_like_the_contract(
+    leaf_hex: &str,
+    mut index: usize,
+    mut width: usize,
+    siblings: &[String],
+) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let node = |prefix: u8, parts: &[&[u8]]| {
+        let mut h = Sha256::new();
+        h.update([prefix]);
+        for p in parts {
+            h.update(p);
+        }
+        h.finalize().to_vec()
+    };
+    let mut cur = node(0, &[&hex::decode(leaf_hex).ok()?]);
+    let mut used = 0;
+    while width > 1 {
+        if (index ^ 1) < width {
+            let sib = hex::decode(siblings.get(used)?).ok()?;
+            used += 1;
+            cur = if index & 1 == 1 {
+                node(1, &[&sib, &cur])
+            } else {
+                node(1, &[&cur, &sib])
+            };
+        }
+        index >>= 1;
+        width = width.div_ceil(2);
+    }
+    (used == siblings.len()).then(|| hex::encode(cur))
+}
+
+#[sqlx::test]
+async fn an_anchored_credential_exports_with_evidence_that_leads_to_the_anchored_root(
+    pool: PgPool,
+) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    // Three credentials in one block: an odd tree, so one proof skips a level.
+    let ids = [
+        off.issue(&t).await,
+        off.issue(&t).await,
+        off.issue(&t).await,
+    ];
+    assert_eq!(
+        off.post("/ledger/seal", Some(&t[3]), json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let api = with_onchain(&off);
+
+    // Not anchored on-chain yet: the export is exactly what it is without the feature.
+    let before = api
+        .get(&format!("/credentials/{}/export", ids[0]), None)
+        .await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert!(before.body.get("evidence").is_none());
+    assert_eq!(
+        before.body,
+        off.get(&format!("/credentials/{}/export", ids[0]), None)
+            .await
+            .body
+    );
+
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    for id in &ids {
+        let d = api
+            .get(&format!("/credentials/{id}/export"), None)
+            .await
+            .body;
+        let e = &d["evidence"][0];
+        assert_eq!(e["type"], "AcvsLedgerAnchor");
+        assert_eq!(e["chainId"], CHAIN);
+        assert_eq!(e["ledger"], CONTRACT);
+        assert_eq!(e["registry"], REGISTRY);
+        assert_eq!(e["issuerId"], 7);
+        assert_eq!(e["epoch"], 1);
+        assert_eq!(e["blockHeight"], 1);
+        assert_eq!(e["transaction"], "0xfeed1");
+        let siblings: Vec<String> = serde_json::from_value(e["merkleProof"].clone()).unwrap();
+        let root = root_like_the_contract(
+            d["credentialHash"].as_str().unwrap(),
+            e["leafIndex"].as_u64().unwrap() as usize,
+            3,
+            &siblings,
+        );
+        assert_eq!(root.as_deref(), e["merkleRoot"].as_str(), "proof for {id}");
+        // Everything that was in the export before is still there, unchanged.
+        let mut without = d.clone();
+        without.as_object_mut().unwrap().remove("evidence");
+        assert_eq!(
+            without,
+            off.get(&format!("/credentials/{id}/export"), None)
+                .await
+                .body
+        );
+        assert!(!d.to_string().contains("STU-1"));
+    }
+
+    // The context defines the new terms only where they are used.
+    let on = api.get("/vc/context", None).await.body;
+    assert!(on["@context"]["merkleProof"].is_string());
+    assert!(on["@context"]["hashedContent"].is_string());
+    let plain = off.get("/vc/context", None).await.body;
+    assert!(plain["@context"].get("merkleProof").is_none());
+    assert!(plain["@context"]["studentName"].is_string());
+}
+
+#[sqlx::test]
+async fn a_receipt_that_does_not_match_gives_no_evidence(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, _] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, Some(&"0".repeat(64))).await;
+    let d = api.get(&format!("/credentials/{a}/export"), None).await;
+    assert_eq!(d.status, StatusCode::OK);
+    assert!(d.body.get("evidence").is_none());
+}
+
+#[sqlx::test]
+async fn the_full_export_is_for_staff_and_lets_the_hash_be_recomputed(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, b] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    let path = format!("/credentials/{a}/export-full");
+
+    assert_eq!(api.get(&path, None).await.status, StatusCode::UNAUTHORIZED);
+    // Without the feature there is no such export.
+    assert_eq!(
+        off.get(&path, Some(&t[2])).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    let r = api.get(&path, Some(&t[2])).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let d = &r.body;
+    assert_eq!(d["credentialSubject"]["studentId"], "STU-1");
+    assert!(d["evidence"][0]["merkleProof"].is_array());
+
+    // The text it carries hashes to the signed content hash, and says the same as the displayed fields.
+    let text = d["hashedContent"].as_str().unwrap();
+    assert_eq!(
+        crate::crypto::sha256_hex(text.as_bytes()),
+        d["credentialHash"]
+    );
+    let hashed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(hashed["id"], a);
+    assert_eq!(hashed["student_id"], d["credentialSubject"]["studentId"]);
+    assert_eq!(
+        hashed["student_name"],
+        d["credentialSubject"]["studentName"]
+    );
+    assert_eq!(hashed["program"], d["credentialSubject"]["program"]);
+    assert_eq!(
+        hashed["graduation_date"],
+        d["credentialSubject"]["graduationDate"]
+    );
+    assert_eq!(hashed["gpa"], d["credentialSubject"]["gpa"]);
+    assert_eq!(hashed["honors"], d["credentialSubject"]["honors"]);
+
+    // Apart from those two additions it is the public export.
+    let mut same = d.clone();
+    same.as_object_mut().unwrap().remove("hashedContent");
+    same["credentialSubject"]
+        .as_object_mut()
+        .unwrap()
+        .remove("studentId");
+    assert_eq!(
+        same,
+        api.get(&format!("/credentials/{a}/export"), None)
+            .await
+            .body
+    );
+
+    // Faculty reach only the credentials they created, as on the credential's own page.
+    sqlx::query("INSERT INTO users (id, email, password_hash, role) VALUES ($1, 'other@t.test', $2, 'faculty')")
+        .bind(Uuid::new_v4())
+        .bind(password_hash())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let other = api.login("other").await;
+    assert_eq!(
+        api.get(&path, Some(&other)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(api.get(&path, Some(&t[0])).await.status, StatusCode::OK);
+    let page = api
+        .get(&format!("/credentials/{a}"), Some(&t[2]))
+        .await
+        .body;
+    assert_eq!(page["full_export"], true);
+    assert!(off
+        .get(&format!("/credentials/{a}"), Some(&t[2]))
+        .await
+        .body
+        .get("full_export")
+        .is_none());
+
+    // Each download is on the audit log, with who took it.
+    let (n, who): (i64, Option<String>) = sqlx::query_as(
+        "SELECT count(*), max(actor_email) FROM audit_logs WHERE action = 'CREDENTIAL_EXPORTED_FULL' AND resource_id = $1",
+    )
+    .bind(&a)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((n, who.as_deref()), (2, Some("registrar@t.test")));
+
+    // A credential that is not anchored on-chain yet still exports in full, without evidence.
+    let d2 = api
+        .get(&format!("/credentials/{b}/export-full"), Some(&t[4]))
+        .await;
+    assert_eq!(d2.status, StatusCode::OK);
+    assert!(d2.body.get("evidence").is_none());
+    assert!(d2.body["hashedContent"].is_string());
+
+    // Only a VALID credential, as for the public export.
+    let rv = api
+        .post(
+            &format!("/credentials/{a}/revoke"),
+            Some(&t[3]),
+            json!({ "reason": "error in record" }),
+        )
+        .await;
+    assert_eq!(rv.status, StatusCode::OK, "{}", rv.body);
+    assert_eq!(
+        api.get(&path, Some(&t[2])).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        api.get(
+            &format!("/credentials/{}/export-full", Uuid::new_v4()),
+            Some(&t[2])
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[sqlx::test]
+async fn the_did_document_lists_the_keys_that_are_still_trusted(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let r = off.get_root("/.well-known/did.json").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let d = &r.body;
+    assert_eq!(d["id"], "did:web:localhost%3A3000");
+    let methods = d["verificationMethod"].as_array().unwrap();
+    assert_eq!(methods.len(), 4);
+    assert_eq!(d["assertionMethod"].as_array().unwrap().len(), 4);
+    for m in methods {
+        assert_eq!(m["type"], "Multikey");
+        assert_eq!(m["controller"], d["id"]);
+        assert_eq!(
+            m["publicKeyMultibase"].as_str(),
+            crate::vc::multikey(m["acvsPublicKeyHex"].as_str().unwrap()).as_deref()
+        );
+        assert!(m["publicKeyMultibase"]
+            .as_str()
+            .unwrap()
+            .starts_with("z6Mk"));
+        assert!(d["assertionMethod"].as_array().unwrap().contains(&m["id"]));
+    }
+    let stages: Vec<&str> = methods
+        .iter()
+        .map(|m| m["acvsStage"].as_str().unwrap())
+        .collect();
+    for s in ["faculty", "exam_cell", "registrar", "university"] {
+        assert!(stages.contains(&s), "{s} key missing");
+    }
+    // No private material of any kind.
+    assert!(!r.body.to_string().contains("private"));
+    // Without on-chain anchoring only the verification service is named.
+    assert_eq!(d["service"].as_array().unwrap().len(), 1);
+
+    // A replaced key stays (what it signed is still good); a compromised key goes.
+    let old: (Uuid, String) = sqlx::query_as(
+        "SELECT id, public_key FROM signing_keys WHERE role = 'registrar' AND status = 'active'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let rot = off
+        .post("/keys/registrar/rotate", Some(&t[3]), json!({}))
+        .await;
+    assert_eq!(rot.status, StatusCode::OK, "{}", rot.body);
+    let d = off.get_root("/.well-known/did.json").await.body;
+    let methods = d["verificationMethod"].as_array().unwrap();
+    assert_eq!(methods.len(), 5);
+    let retired = methods
+        .iter()
+        .find(|m| m["acvsPublicKeyHex"] == old.1)
+        .unwrap();
+    assert_eq!(retired["acvsStatus"], "retired");
+
+    let rev = off
+        .post(
+            &format!("/keys/{}/revoke", old.0),
+            Some(&t[3]),
+            json!({ "reason": "laptop stolen" }),
+        )
+        .await;
+    assert_eq!(rev.status, StatusCode::OK, "{}", rev.body);
+    let d = off.get_root("/.well-known/did.json").await.body;
+    assert_eq!(d["verificationMethod"].as_array().unwrap().len(), 4);
+    assert!(!d.to_string().contains(&old.1));
+
+    // With on-chain anchoring the document also says where the anchors and the registry entry are.
+    let on = with_onchain(&off)
+        .get_root("/.well-known/did.json")
+        .await
+        .body;
+    let services: Vec<&str> = on["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["serviceEndpoint"].as_str().unwrap())
+        .collect();
+    assert!(services.contains(&format!("eip155:{CHAIN}:{CONTRACT}").as_str()));
+    assert!(services.contains(&format!("eip155:{CHAIN}:{REGISTRY}#7").as_str()));
 }

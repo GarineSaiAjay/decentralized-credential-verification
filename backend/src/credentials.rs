@@ -162,7 +162,8 @@ pub struct Content<'a> {
 }
 
 impl Content<'_> {
-    pub fn hash(&self) -> String {
+    /// The exact JSON value the content hash covers.
+    fn value(&self) -> Value {
         let mut v = json!({
             "v": 1, "id": self.id.to_string(), "student_id": self.student_id, "student_name": self.student_name,
             "program": self.program, "graduation_date": self.graduation_date.to_string(),
@@ -172,12 +173,22 @@ impl Content<'_> {
             v["v"] = 2.into();
             v["supersedes"] = old.to_string().into();
         }
-        crypto::canonical_hash(&v)
+        v
+    }
+
+    pub fn hash(&self) -> String {
+        crypto::canonical_hash(&self.value())
+    }
+
+    /// The exact text whose SHA-256 is the content hash, so someone holding it can recompute the hash
+    /// without knowing how this server orders or formats JSON.
+    pub fn canonical(&self) -> String {
+        serde_json::to_string(&self.value()).expect("json value serializes")
     }
 }
 
 impl CredRow {
-    fn content(&self) -> Content<'_> {
+    pub fn content(&self) -> Content<'_> {
         Content {
             id: self.id,
             student_id: &self.student_id,
@@ -569,7 +580,8 @@ pub async fn list(
     })).collect::<Vec<_>>(), "next": next })))
 }
 
-async fn load(st: &AppState, user: &AuthUser, id: Uuid) -> Res<CredRow> {
+/// Reads a credential on behalf of a signed-in user. Faculty only see the credentials they created.
+pub async fn load(st: &AppState, user: &AuthUser, id: Uuid) -> Res<CredRow> {
     let c: CredRow = sqlx::query_as(&format!(
         "SELECT {CRED_COLS} FROM credentials WHERE id = $1"
     ))
@@ -605,6 +617,10 @@ pub async fn get(
     let mut view = full_view(&c, &ev, t.as_ref());
     view["supersedes"] = json!(c.supersedes);
     view["superseded_by"] = json!(successor(&st, id).await?);
+    // Present only when on-chain anchoring is configured: the page then offers the full export.
+    if st.cfg.onchain.is_some() {
+        view["full_export"] = true.into();
+    }
     let approvers: Vec<(String, String)> = sqlx::query_as(
         "SELECT a.role, u.email FROM approvals a JOIN users u ON u.id = a.approver_id WHERE a.credential_id = $1 ORDER BY a.signed_at",
     )

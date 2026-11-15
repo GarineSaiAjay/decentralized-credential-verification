@@ -90,6 +90,15 @@ The backend never talks to the chain. With `deploy/chain.yml` it is given `CHAIN
 | Ledger and Verify pages | An "On-chain" column and an "On-chain anchor" line, linked to the explorer when one is set |
 | Metrics | `acvs_onchain_unanchored_blocks`, `acvs_onchain_mismatched_blocks`, `acvs_onchain_open_incidents` |
 
+With `CHAIN_REGISTRY_CONTRACT` and `CHAIN_ISSUER_ID` also set, exports carry what a verifier needs to
+check a credential without this server (see `verifier/`):
+
+| Where | What |
+|---|---|
+| `GET /api/v1/credentials/:id/export` | Gains an `evidence` entry once the block is anchored: chain, registry, issuer id, ledger, epoch, position and Merkle proof |
+| `GET /api/v1/credentials/:id/export-full` | Signed-in staff only, audit-logged: the same file plus the student ID and the exact text the hash covers |
+| `GET /.well-known/did.json` | The university's `did:web` document: its trusted signing keys, and where its anchors are |
+
 A receipt never changes a credential's verdict. Without those settings none of these fields exist and
 every response is exactly as it was before. A half-finished setting (for example `CHAIN_ID` without the
 contract) is logged as a warning and treated as "off"; it never stops the backend.

@@ -102,12 +102,13 @@ OUT=$(dc run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$T/chain:/out" cha
 echo "$OUT" | grep -q 'refusing to overwrite' && ok "an existing key is never overwritten" || bad "overwrite not refused: $OUT"
 chmod 644 "$KS"
 cast rpc anvil_setBalance "$ANCHORER" 0x8AC7230489E80000 -r $RPC >/dev/null
-OUT=$(cd contracts && ISSUER_ADMIN=$ADMIN ANCHORER=$ANCHORER ISSUER_NAME="Example University" ISSUER_DID="did:web:example.edu" \
+OUT=$(cd contracts && ISSUER_ADMIN=$ADMIN ANCHORER=$ANCHORER ISSUER_NAME="Example University" ISSUER_DID="did:web:localhost%3A3000" \
   forge script script/Deploy.s.sol --rpc-url $RPC --unlocked --sender $DEPLOYER --broadcast 2>&1)
 LEDGER=$(echo "$OUT" | grep 'LedgerAnchor  ' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
 [ -n "$LEDGER" ] && ok "contracts deployed to the local chain (LedgerAnchor $LEDGER)" || { bad "deployment failed: $(echo "$OUT" | tail -5)"; exit 1; }
 rm -rf contracts/broadcast contracts/cache/Deploy.s.sol
-export CHAIN_ANCHOR_CONTRACT=$LEDGER
+REGISTRY=$(echo "$OUT" | grep 'IssuerRegistry  ' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
+export CHAIN_ANCHOR_CONTRACT=$LEDGER CHAIN_REGISTRY_CONTRACT=$REGISTRY CHAIN_ISSUER_ID=1
 LOWER=$(echo "$LEDGER" | tr 'A-F' 'a-f')
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "worker database role created" || bad "chain-db-role.sh failed"
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "running the role script again is harmless" || bad "second run of chain-db-role.sh failed"
@@ -197,6 +198,72 @@ expect "the contract holds its hash" "$(on_chain 1 "$LAST_H")" "$(db_hash "$LAST
 expect "one more transaction" "$(nonce)" 2
 refused DB "UPDATE chain_anchors SET tx_hash = 'x' WHERE block_height = 1" 'append-only' && ok "receipts cannot be edited" || bad "receipt editable"
 refused DB "DELETE FROM chain_anchors WHERE block_height = 1" 'append-only' && ok "receipts cannot be deleted" || bad "receipt deletable"
+
+echo "== a credential file can be checked against the chain with the backend switched off"
+# The issuer admin lists the university's four signing keys in the registry (phase 5 automates this step).
+STAGE=0
+for role in faculty exam_cell registrar university; do
+  cast send "$REGISTRY" 'addKey(uint64,bytes32,uint8)' 1 "0x$(DB "SELECT public_key FROM signing_keys WHERE role = '$role' AND status = 'active'")" $STAGE --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
+  STAGE=$((STAGE + 1))
+done
+REGISTRAR_KEY=0x$(DB "SELECT public_key FROM signing_keys WHERE role = 'registrar' AND status = 'active'")
+expect "the university's keys are listed in the registry" "$(cast call "$REGISTRY" 'isKeyTrusted(uint64,bytes32)(bool)' 1 "$REGISTRAR_KEY" -r $RPC)" true
+V="$T/v"; mkdir -p "$V"
+curl -s "$BASE/credentials/${IDS[0]}/export" > "$V/public.json"
+expect "the full export needs a sign-in" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/credentials/${IDS[0]}/export-full")" 401
+curl -s -H "Authorization: Bearer $REG" "$BASE/credentials/${IDS[0]}/export-full" > "$V/full.json"
+curl -s -H "Authorization: Bearer $REG" "$BASE/credentials/${IDS[1]}/export-full" > "$V/to-be-revoked.json"
+expect "the public export names the anchor and the registry" "$(j "[d['evidence'][0]['chainId'], d['evidence'][0]['ledger'], d['evidence'][0]['registry'], d['evidence'][0]['issuerId']]" < "$V/public.json")" "[31337, '$LOWER', '$(echo "$REGISTRY" | tr 'A-F' 'a-f')', 1]"
+expect "and still leaves out the student ID" "$(grep -c 'S-1' "$V/public.json")" 0
+expect "the full export carries it, with the text the hash covers" "$(j "[d['credentialSubject']['studentId'], __import__('hashlib').sha256(d['hashedContent'].encode()).hexdigest() == d['credentialHash']]" < "$V/full.json")" "['S-1', True]"
+expect "the download is on the audit log" "$(DB "SELECT count(*) FROM audit_logs WHERE action = 'CREDENTIAL_EXPORTED_FULL'")" 2
+DID=$(curl -s http://localhost:3000/.well-known/did.json)
+expect "the site publishes its DID document with the four keys" "$(echo "$DID" | j "[d['id'], len(d['verificationMethod'])]")" "['did:web:localhost%3A3000', 4]"
+cast call "$REGISTRY" 'issuer(uint64)((address,address,address,bool,uint64,string,string))' 1 -r $RPC | grep -q 'did:web:localhost%3A3000' && ok "which is the DID the registry lists" || bad "registry DID differs"
+expect "the DID document lists the key the registry lists" "$(echo "$DID" | j "'${REGISTRAR_KEY#0x}' in [m['acvsPublicKeyHex'] for m in d['verificationMethod']]")" True
+if [ -d e2e/node_modules ]; then
+  # Tampered copies: each changes one thing a forger might.
+  python3 - "$V" <<'PY'
+import json, sys, copy
+v = sys.argv[1]
+full = json.load(open(f"{v}/full.json")); public = json.load(open(f"{v}/public.json"))
+def save(name, d): json.dump(d, open(f"{v}/{name}.json", "w"))
+d = copy.deepcopy(full); d["credentialSubject"]["studentName"] = "Someone Else"; save("changed-name", d)
+d = copy.deepcopy(full); d["credentialSubject"]["studentName"] = "Someone Else"; d["hashedContent"] = d["hashedContent"].replace("Ada Lovelace", "Someone Else"); save("changed-name-and-content", d)
+d = copy.deepcopy(full); p = d["proof"][2]; p["proofValue"] = ("0" if p["proofValue"][0] != "0" else "1") + p["proofValue"][1:]; save("changed-signature", d)
+d = copy.deepcopy(full); d["evidence"][0]["leafIndex"] = 1 - d["evidence"][0]["leafIndex"]; save("other-position", d)
+d = copy.deepcopy(full); d["evidence"][0]["ledger"] = d["evidence"][0]["registry"]; save("other-ledger", d)
+d = copy.deepcopy(full); d["evidence"][0]["chainId"] = 1; save("other-network", d)
+d = copy.deepcopy(full); del d["evidence"]; save("no-evidence", d)
+d = copy.deepcopy(public); d["credentialSubject"]["studentName"] = "Someone Else"; save("public-changed-name", d)
+PY
+  node e2e/verifier.mjs forge "$V/full.json" "$V/forged-with-own-keys.json"
+  call GET "/verify/${IDS[1]}"
+  cast send "$LEDGER" 'revoke(uint64,uint64,uint32)' 1 "$(echo "$BODY" | j "d['anchor']['height']")" "$(echo "$BODY" | j "d['anchor']['leaf_index']")" --keystore "$KS" --password "$CHAIN_KEYSTORE_PASSPHRASE" -r $RPC >/dev/null 2>&1
+  dc stop backend frontend >/dev/null 2>&1
+  expect "(the backend is stopped)" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$BASE/ledger/verify")" 000
+  vcheck() { node e2e/verifier.mjs check "$PWD/verifier/index.html" "$@" > "$T/v.out" 2>&1; cat "$T/v.out"; fails=$((fails + $(grep -c '^  FAIL' "$T/v.out"))); }
+  vcheck $RPC yes "$V/full.json=VALID" "$V/public.json=GENUINE RECORD, DETAILS NOT PROVEN" "$V/public-changed-name.json=GENUINE RECORD, DETAILS NOT PROVEN" \
+    "$V/changed-name.json=INVALID=fields shown" "$V/changed-name-and-content.json=INVALID=fields shown" "$V/changed-signature.json=INVALID=Signature of the registrar" \
+    "$V/forged-with-own-keys.json=INVALID=faculty key" "$V/other-position.json=INVALID=credential is in that block" "$V/other-ledger.json=INVALID=own ledger contract" \
+    "$V/other-network.json=COULD NOT BE CHECKED" "$V/no-evidence.json=SIGNATURES ONLY" "$V/to-be-revoked.json=REVOKED=has not been revoked"
+  echo "  -- a registry the person has not confirmed is never used"
+  vcheck $RPC no "$V/full.json=NOT CHECKED=registry is one you trust" "$V/forged-with-own-keys.json=NOT CHECKED=registry is one you trust"
+  echo "  -- the chain node cannot be reached"
+  vcheck http://127.0.0.1:9 yes "$V/full.json=COULD NOT BE CHECKED"
+  echo "  -- the registry owner suspends the issuer, then reinstates it"
+  cast send "$REGISTRY" 'suspendIssuer(uint64,string)' 1 "test" --unlocked --from $DEPLOYER -r $RPC >/dev/null 2>&1
+  vcheck $RPC yes "$V/full.json=INVALID=issuer is listed"
+  cast send "$REGISTRY" 'reinstateIssuer(uint64,string)' 1 "test" --unlocked --from $DEPLOYER -r $RPC >/dev/null 2>&1
+  echo "  -- the issuer admin revokes a signing key as compromised"
+  cast send "$REGISTRY" 'revokeKey(uint64,bytes32,string)' 1 "$REGISTRAR_KEY" "test" --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
+  vcheck $RPC yes "$V/full.json=INVALID=registrar key"
+  dc up -d --wait backend frontend >/dev/null 2>&1 && ok "backend started again" || bad "backend did not come back"
+elif [ -n "${CHAIN_TEST_UI:-}" ]; then
+  bad "the verifier check was required (CHAIN_TEST_UI) but e2e/node_modules is missing: run npm ci in e2e/"
+else
+  echo "  skip the verifier page check (run 'npm ci' in e2e/ to include it)"
+fi
 
 echo "== only one worker runs at a time"
 once >/dev/null; RC=$?

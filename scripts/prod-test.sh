@@ -100,6 +100,7 @@ expect "scanner user agent blocked" "$(C -o /dev/null -w '%{http_code}' -A 'sqlm
 expect "SQL injection in JSON body blocked" "$(C -o /dev/null -w '%{http_code}' -X POST https://localhost/api/v1/auth/login -H 'Content-Type: application/json' -d "{\"email\":\"a@b.co' OR 1=1 --\",\"password\":\"x\"}")" 403
 t=$(C -o /dev/null -w '%{http_code}' --path-as-is 'https://localhost/%2e%2e/%2e%2e/etc/passwd'); case "$t" in 400|403|404) ok "path traversal refused ($t)" ;; *) bad "path traversal got $t" ;; esac
 expect "a normal API request passes" "$(C -o /dev/null -w '%{http_code}' https://localhost/api/v1/ledger/verify)" 200
+expect "the DID document is served through the edge and the WAF" "$(C https://localhost/.well-known/did.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'], len(d['verificationMethod']))")" "did:web:localhost 4"
 expect "a normal login request passes the WAF" "$(C -o /dev/null -w '%{http_code}' -X POST https://localhost/api/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"wrong-password-1"}')" 401
 expect "oversized body refused at the edge" "$(python3 -c 'print("x"*40000)' | C -o /dev/null -w '%{http_code}' -X POST https://localhost/api/v1/auth/login -H 'Content-Type: application/json' --data-binary @-)" 413
 
