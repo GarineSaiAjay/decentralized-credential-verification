@@ -11,7 +11,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hex",
- "rand 0.8.8",
+ "rand 0.10.3",
  "rpassword",
  "serde",
  "serde_json",
