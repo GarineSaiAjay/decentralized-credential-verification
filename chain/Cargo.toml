@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 hex = "0.4"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.8"
+rpassword = "7"
 # Needed only so that backend/src/crypto.rs compiles here; same versions as backend/Cargo.toml.
 sha2 = "0.10"
 ed25519-dalek = "2"

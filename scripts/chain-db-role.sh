@@ -4,10 +4,12 @@
 #
 # The worker gets its own login, not the backend's, so that a bug or a break-in there cannot damage the
 # ledger. The role may:
-#   read    blocks; the public columns of signing_keys (never private_key_enc); and, of credentials, only
-#           id, status, block_height, leaf_index and credential_hash (no name, no student id)
+#   read    blocks; the public columns of signing_keys (never private_key_enc); of credentials, only
+#           id, status, block_height, leaf_index and credential_hash (no name, no student id); and the signed
+#           rejection/revocation events (to check a revocation before publishing it), without who made them
 #   insert  into its own tables: chain_anchors, chain_revocations, chain_incidents
-# and nothing else: no UPDATE or DELETE anywhere, no other table.
+#   update  one table only: chain_sync_state, its own note of what waits for the issuer admin
+# and nothing else: no UPDATE or DELETE on the ledger or on its receipts, no other table.
 #
 # Safe to run again: it sets the password and re-applies exactly these grants. Run it again after
 # scripts/restore.sh on a new host (roles live in the server, not in the backup).
@@ -20,10 +22,10 @@ PW=${CHAIN_DB_PASSWORD:-$(grep -s '^CHAIN_DB_PASSWORD=' .env | cut -d= -f2- || t
 [[ "$PW" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "CHAIN_DB_PASSWORD may only contain letters, digits, '.', '_' and '-' (it is used inside a connection URL)" >&2; exit 1; }
 
 docker compose exec -T postgres psql -U acvs -d acvs -q -v ON_ERROR_STOP=1 -v pw="$PW" <<'SQL'
-SELECT to_regclass('public.chain_anchors') IS NOT NULL AS ready \gset
+SELECT to_regclass('public.chain_anchors') IS NOT NULL AND to_regclass('public.chain_sync_state') IS NOT NULL AS ready \gset
 \if :ready
 \else
-  \echo 'the chain tables do not exist yet: start the backend once so it applies migration 0010'
+  \echo 'the chain tables do not exist yet: start the backend once so it applies migrations 0010 and 0011'
   \quit 3
 \endif
 
@@ -41,9 +43,11 @@ REVOKE ALL ON SCHEMA public FROM acvs_chain;
 GRANT CONNECT ON DATABASE acvs TO acvs_chain;
 GRANT USAGE ON SCHEMA public TO acvs_chain;
 GRANT SELECT ON blocks TO acvs_chain;
-GRANT SELECT (id, role, public_key, status) ON signing_keys TO acvs_chain;
+GRANT SELECT (id, role, public_key, status, created_at) ON signing_keys TO acvs_chain;
+GRANT SELECT (credential_id, kind, stage, reason, key_id, signature, ts, legacy) ON credential_events TO acvs_chain;
 GRANT SELECT (id, status, block_height, leaf_index, credential_hash) ON credentials TO acvs_chain;
 GRANT SELECT, INSERT ON chain_anchors, chain_revocations, chain_incidents TO acvs_chain;
 GRANT USAGE ON SEQUENCE chain_incidents_id_seq TO acvs_chain;
+GRANT SELECT, INSERT, UPDATE ON chain_sync_state TO acvs_chain;
 SQL
-echo "role acvs_chain is ready (read: blocks, public key columns, credential positions; insert: chain_* tables)"
+echo "role acvs_chain is ready (read: blocks, public key columns, credential positions, signed events; insert: chain_* tables)"

@@ -429,6 +429,16 @@ export function Verify({ id, h }: { id?: string; h?: string }) {
                   ) : <td className="muted">not yet timestamped by an outside authority</td>}
                 </tr>
                 {v.anchor.onchain && <tr><th>On-chain anchor</th><td><OnChain o={v.anchor.onchain} long /></td></tr>}
+                {v.anchor.onchain?.revocation && (
+                  <tr>
+                    <th>On-chain revocation</th>
+                    {v.anchor.onchain.revocation.published
+                      ? <td>{v.anchor.onchain.revocation.explorer_url
+                          ? <a href={v.anchor.onchain.revocation.explorer_url} target="_blank" rel="noopener noreferrer" title={v.anchor.onchain.revocation.tx_hash}>published {when(v.anchor.onchain.revocation.revoked_at)}</a>
+                          : <span title={v.anchor.onchain.revocation.tx_hash}>published {when(v.anchor.onchain.revocation.revoked_at)}</span>}</td>
+                      : <td className="muted">not yet published on the public chain (this page already shows it as revoked)</td>}
+                  </tr>
+                )}
               </tbody></table>
             </Card>
           )}
@@ -491,6 +501,15 @@ export function Ledger({ role }: { role: Role }) {
           {data.onchain.unanchored === 0 ? 'Every block is anchored.' : `${data.onchain.unanchored} block(s) waiting to be anchored.`}
         </p>
       )}
+      {data?.onchain?.key_changes?.pending > 0 && (
+        <div className="notice err">
+          {data.onchain.key_changes.pending} signing-key change(s) wait for the issuer admin's signature, so the public registry is behind this system:
+          <ul>{data.onchain.key_changes.changes.map((c: string) => <li key={c}>{c}</li>)}</ul>
+          The admin signs them with <span className="mono">acvs-chain sync-keys</span> and <span className="mono">admin-sign</span>.
+        </div>
+      )}
+      {data?.onchain?.key_changes?.warnings?.map((w: string) => <div className="notice err" key={w}>Issuer registry: {w}</div>)}
+      {data?.onchain?.unpublished_revocations > 0 && <p className="muted">{data.onchain.unpublished_revocations} revocation(s) not yet published on the public chain.</p>}
       {data?.onchain?.open_incidents.map((i: any) => (
         <div className="notice err" key={`${i.kind}-${i.height}-${i.at}`}>On-chain anchoring has stopped at block {i.height} ({i.kind.replace(/_/g, ' ')}). {i.note} Credentials are not affected.</div>
       ))}

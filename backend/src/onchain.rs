@@ -40,6 +40,13 @@ pub struct Receipt {
 /// An open finding of the worker: kind, block height, when it was recorded, and its explanation.
 type Incident = (String, Option<i64>, DateTime<Utc>, Option<String>);
 
+/// Counts revoked credentials in sealed blocks whose revocation the worker has not recorded as published.
+const UNPUBLISHED_REVOCATIONS: &str = "(SELECT count(*) FROM credentials c
+              JOIN credential_events e ON e.credential_id = c.id AND e.kind = 'revoked'
+              WHERE c.status = 'revoked' AND c.block_height IS NOT NULL AND NOT EXISTS
+                (SELECT 1 FROM chain_revocations r
+                 WHERE r.credential_id = c.id AND r.chain_id = $1 AND r.contract = $2))";
+
 const COLS: &str =
     "block_height, block_hash, merkle_root, leaf_count, epoch, tx_hash, chain_block, anchored_at";
 
@@ -115,20 +122,64 @@ pub async fn overview(db: &PgPool, cfg: &OnchainConfig) -> Res<Value> {
     .bind(&cfg.contract)
     .fetch_all(db)
     .await?;
+    let (unpublished,): (i64,) = sqlx::query_as(&format!("SELECT {UNPUBLISHED_REVOCATIONS}"))
+        .bind(cfg.chain_id)
+        .bind(&cfg.contract)
+        .fetch_one(db)
+        .await?;
+    // What the worker last noted as waiting for the issuer admin's signature (absent until it has looked).
+    let keys: Option<(i32, Value, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT key_changes_pending, detail, checked_at FROM chain_sync_state WHERE chain_id = $1 AND contract = $2",
+    )
+    .bind(cfg.chain_id)
+    .bind(&cfg.contract)
+    .fetch_optional(db)
+    .await?;
     Ok(json!({
         "chain_id": cfg.chain_id,
         "contract": cfg.contract,
         "explorer_url": cfg.explorer.as_ref().map(|e| format!("{e}/address/{}", cfg.contract)),
         "unanchored": unanchored,
+        "unpublished_revocations": unpublished,
+        "key_changes": keys.map(|(pending, detail, checked_at)| json!({
+            "pending": pending,
+            "changes": detail.get("changes").cloned().unwrap_or_else(|| json!([])),
+            "warnings": detail.get("warnings").cloned().unwrap_or_else(|| json!([])),
+            "checked_at": checked_at,
+        })),
         "open_incidents": incidents.into_iter().map(|(kind, height, at, note)|
             json!({ "kind": kind, "height": height, "at": at, "note": note })).collect::<Vec<_>>(),
     }))
 }
 
+/// Whether a revoked credential's revocation has been published on the chain, and where.
+pub async fn revocation(db: &PgPool, cfg: &OnchainConfig, credential: uuid::Uuid) -> Res<Value> {
+    let row: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT tx_hash, revoked_at FROM chain_revocations WHERE chain_id = $1 AND contract = $2 AND credential_id = $3",
+    )
+    .bind(cfg.chain_id)
+    .bind(&cfg.contract)
+    .bind(credential)
+    .fetch_optional(db)
+    .await?;
+    Ok(match row {
+        None => json!({ "published": false }),
+        Some((tx_hash, revoked_at)) => json!({
+            "published": true,
+            "revoked_at": revoked_at,
+            "explorer_url": cfg.explorer.as_ref().map(|e| format!("{e}/tx/{tx_hash}")),
+            "tx_hash": tx_hash,
+        }),
+    })
+}
+
 /// Numbers for the metrics endpoint: (blocks without a receipt, receipts that do not match their block,
-/// open incidents).
-pub async fn gauges(db: &PgPool, cfg: &OnchainConfig) -> Result<(i64, i64, i64), sqlx::Error> {
-    sqlx::query_as(
+/// open incidents, revocations not yet published, signing-key changes waiting for the issuer admin).
+pub async fn gauges(
+    db: &PgPool,
+    cfg: &OnchainConfig,
+) -> Result<(i64, i64, i64, i64, i64), sqlx::Error> {
+    sqlx::query_as(&format!(
         "SELECT
            (SELECT count(*) FROM blocks b WHERE NOT EXISTS
               (SELECT 1 FROM chain_anchors a WHERE a.block_height = b.height AND a.chain_id = $1 AND a.contract = $2)),
@@ -137,8 +188,10 @@ pub async fn gauges(db: &PgPool, cfg: &OnchainConfig) -> Result<(i64, i64, i64),
                 AND (a.block_hash <> b.block_hash OR a.merkle_root <> b.merkle_root)),
            (SELECT count(*) FROM chain_incidents i WHERE i.chain_id = $1 AND i.contract = $2 AND NOT EXISTS
               (SELECT 1 FROM chain_anchors a
-               WHERE a.chain_id = i.chain_id AND a.contract = i.contract AND a.created_at > i.created_at))",
-    )
+               WHERE a.chain_id = i.chain_id AND a.contract = i.contract AND a.created_at > i.created_at)),
+           {UNPUBLISHED_REVOCATIONS},
+           coalesce((SELECT key_changes_pending FROM chain_sync_state WHERE chain_id = $1 AND contract = $2), 0)::bigint"
+    ))
     .bind(cfg.chain_id)
     .bind(&cfg.contract)
     .fetch_one(db)

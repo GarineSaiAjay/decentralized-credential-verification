@@ -2640,3 +2640,134 @@ async fn the_did_document_lists_the_keys_that_are_still_trusted(pool: PgPool) {
     assert!(services.contains(&format!("eip155:{CHAIN}:{CONTRACT}").as_str()));
     assert!(services.contains(&format!("eip155:{CHAIN}:{REGISTRY}#7").as_str()));
 }
+
+#[sqlx::test]
+async fn a_revocation_is_shown_as_published_once_the_worker_recorded_it(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    let [a, b] = two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    receipt(&pool, CHAIN, CONTRACT, 2, None).await;
+
+    // A credential that is not revoked says nothing about a revocation.
+    let v = api.get(&format!("/verify/{b}"), None).await.body;
+    assert!(v["anchor"]["onchain"].get("revocation").is_none());
+    assert_eq!(
+        api.get("/ledger/blocks", Some(&t[3])).await.body["onchain"]["unpublished_revocations"],
+        0
+    );
+
+    let rv = api
+        .post(
+            &format!("/credentials/{a}/revoke"),
+            Some(&t[3]),
+            json!({ "reason": "error in record" }),
+        )
+        .await;
+    assert_eq!(rv.status, StatusCode::OK, "{}", rv.body);
+    let v = api.get(&format!("/verify/{a}"), None).await.body;
+    assert_eq!(v["verdict"], "REVOKED");
+    assert_eq!(v["anchor"]["onchain"]["status"], "ok");
+    assert_eq!(
+        v["anchor"]["onchain"]["revocation"],
+        json!({ "published": false })
+    );
+    assert_eq!(
+        api.get("/ledger/blocks", Some(&t[3])).await.body["onchain"]["unpublished_revocations"],
+        1
+    );
+
+    // The worker's receipt, for another contract first: that says nothing about this one.
+    for (contract, tx) in [
+        ("0x00000000000000000000000000000000000000aa", "0xother"),
+        (CONTRACT, "0xdead"),
+    ] {
+        sqlx::query(
+            "INSERT INTO chain_revocations (chain_id, contract, credential_id, epoch, block_height, leaf_index, tx_hash, chain_block, revoked_at)
+             VALUES ($1, $2, $3, 1, 1, 0, $4, 300, now())",
+        )
+        .bind(CHAIN)
+        .bind(contract)
+        .bind(Uuid::parse_str(&a).unwrap())
+        .bind(tx)
+        .execute(&pool)
+        .await
+        .unwrap();
+        if contract != CONTRACT {
+            let v = api.get(&format!("/verify/{a}"), None).await.body;
+            assert_eq!(v["anchor"]["onchain"]["revocation"]["published"], false);
+        }
+    }
+    let v = api.get(&format!("/verify/{a}"), None).await.body;
+    let r = &v["anchor"]["onchain"]["revocation"];
+    assert_eq!(r["published"], true);
+    assert_eq!(r["tx_hash"], "0xdead");
+    assert_eq!(r["explorer_url"], "https://explorer.test/tx/0xdead");
+    assert!(r["revoked_at"].is_string());
+    assert_eq!(
+        v["verdict"], "REVOKED",
+        "the verdict is the server's own, with or without the chain"
+    );
+    assert_eq!(
+        api.get("/ledger/blocks", Some(&t[3])).await.body["onchain"]["unpublished_revocations"],
+        0
+    );
+
+    // With the display off, the same credential's answer has no on-chain part at all.
+    let plain = off.get(&format!("/verify/{a}"), None).await.body;
+    assert!(plain["anchor"].get("onchain").is_none());
+    assert_eq!(plain["verdict"], "REVOKED");
+}
+
+#[sqlx::test]
+async fn key_changes_waiting_for_the_admin_are_shown_from_the_workers_note(pool: PgPool) {
+    let off = start(pool.clone()).await;
+    let t = off.everyone().await;
+    two_blocks(&off, &t).await;
+    let api = with_onchain(&off);
+
+    // Until the worker has looked, there is nothing to say.
+    let l = api.get("/ledger/blocks", Some(&t[3])).await.body;
+    assert!(l["onchain"]["key_changes"].is_null());
+
+    let note = |pending: i32, detail: Value| {
+        sqlx::query(
+            "INSERT INTO chain_sync_state (chain_id, contract, key_changes_pending, detail) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (chain_id, contract) DO UPDATE SET key_changes_pending = EXCLUDED.key_changes_pending, detail = EXCLUDED.detail",
+        )
+        .bind(CHAIN)
+        .bind(CONTRACT)
+        .bind(pending)
+        .bind(detail)
+        .execute(&pool)
+    };
+    note(2, json!({ "changes": ["Mark signing key ab12… as replaced", "List signing key cd34… as the active registrar key"], "warnings": ["something to look at"] }))
+        .await
+        .unwrap();
+    let k = api.get("/ledger/blocks", Some(&t[3])).await.body["onchain"]["key_changes"].clone();
+    assert_eq!(k["pending"], 2);
+    assert_eq!(k["changes"].as_array().unwrap().len(), 2);
+    assert_eq!(k["warnings"], json!(["something to look at"]));
+    assert!(k["checked_at"].is_string());
+
+    note(0, json!({ "changes": [], "warnings": [] }))
+        .await
+        .unwrap();
+    let k = api.get("/ledger/blocks", Some(&t[3])).await.body["onchain"]["key_changes"].clone();
+    assert_eq!(
+        (k["pending"].clone(), k["changes"].clone()),
+        (json!(0), json!([]))
+    );
+
+    // The receipts stay append-only; only this one note may be rewritten.
+    let e = sqlx::query("UPDATE chain_incidents SET kind = 'x'")
+        .execute(&pool)
+        .await;
+    assert!(e.is_ok(), "no rows, so nothing to refuse");
+    receipt(&pool, CHAIN, CONTRACT, 1, None).await;
+    let e = sqlx::query("UPDATE chain_anchors SET tx_hash = 'x'")
+        .execute(&pool)
+        .await;
+    assert!(e.unwrap_err().to_string().contains("append-only"));
+}

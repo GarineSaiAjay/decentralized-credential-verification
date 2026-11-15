@@ -6,23 +6,41 @@ use alloy::primitives::Address;
 
 pub type R<T> = Result<T, String>;
 
-pub struct Config {
-    /// Connection for the worker's own database role (see scripts/chain-db-role.sh), not the backend's.
-    pub database_url: String,
+/// How to reach the chain and how careful to be when sending. Shared by the worker and the admin commands.
+#[derive(Clone)]
+pub struct Net {
     pub rpc_url: String,
     pub chain_id: u64,
-    pub anchor_contract: Address,
-    pub keystore_file: PathBuf,
-    pub keystore_passphrase: String,
-    /// Blocks that must follow a transaction's block before its receipt is written.
+    /// Blocks that must follow a transaction's block before it counts as done.
     pub confirmations: u64,
-    pub interval: Duration,
-    /// The worker sends nothing while the network asks for more than this per unit of gas.
+    /// Nothing is sent while the network asks for more than this per unit of gas.
     pub max_fee_wei: u128,
     pub tx_timeout: Duration,
     /// Longest wait for one answer from the RPC node.
     pub rpc_timeout: Duration,
     pub poll: Duration,
+    /// Most chain blocks searched by one log query (public nodes limit this).
+    pub log_window: u64,
+}
+
+/// This university's entry in the on-chain issuer registry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IssuerRef {
+    pub registry: Address,
+    pub issuer_id: u64,
+}
+
+pub struct Config {
+    /// Connection for the worker's own database role (see scripts/chain-db-role.sh), not the backend's.
+    pub database_url: String,
+    pub net: Net,
+    pub anchor_contract: Address,
+    /// Set when CHAIN_REGISTRY_CONTRACT and CHAIN_ISSUER_ID are: the worker then also reports which
+    /// signing-key changes still wait for the issuer admin.
+    pub issuer: Option<IssuerRef>,
+    pub keystore_file: PathBuf,
+    pub keystore_passphrase: String,
+    pub interval: Duration,
     /// Most blocks anchored by one transaction when catching up.
     pub batch: i64,
 }
@@ -76,7 +94,30 @@ pub fn parse_address(name: &str, value: &str) -> R<Address> {
         .ok_or_else(|| format!("{name} must be a contract address (0x followed by 40 hex digits)"))
 }
 
-impl Config {
+/// CHAIN_REGISTRY_CONTRACT and CHAIN_ISSUER_ID belong together; both unset means "no registry".
+pub fn issuer_from_env() -> R<Option<IssuerRef>> {
+    match (
+        optional("CHAIN_REGISTRY_CONTRACT"),
+        optional("CHAIN_ISSUER_ID"),
+    ) {
+        (None, None) => Ok(None),
+        (Some(r), Some(i)) => Ok(Some(IssuerRef {
+            registry: parse_address("CHAIN_REGISTRY_CONTRACT", &r)?,
+            issuer_id: i
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or("CHAIN_ISSUER_ID must be a positive whole number")?,
+        })),
+        _ => Err("CHAIN_REGISTRY_CONTRACT and CHAIN_ISSUER_ID must be set together".into()),
+    }
+}
+
+pub fn anchor_contract_from_env() -> R<Address> {
+    parse_address("CHAIN_ANCHOR_CONTRACT", &required("CHAIN_ANCHOR_CONTRACT")?)
+}
+
+impl Net {
     pub fn from_env() -> R<Self> {
         let rpc_url = required("CHAIN_RPC_URL")?;
         if !(rpc_url.starts_with("https://") || rpc_url.starts_with("http://")) {
@@ -89,34 +130,20 @@ impl Config {
             .ok_or(
                 "CHAIN_ID must be a positive whole number (for example 31337 for a local node)",
             )?;
-        let keystore_passphrase = required("CHAIN_KEYSTORE_PASSPHRASE")?;
         let max_fee = optional("CHAIN_MAX_FEE_GWEI").unwrap_or_else(|| "50".into());
         let max_fee_wei = gwei_to_wei(&max_fee)
             .filter(|w| *w > 0)
             .ok_or("CHAIN_MAX_FEE_GWEI must be a positive number of gwei, for example 50 or 0.5")?;
         Ok(Self {
-            database_url: required("CHAIN_DATABASE_URL")?,
             rpc_url,
             chain_id,
-            anchor_contract: parse_address(
-                "CHAIN_ANCHOR_CONTRACT",
-                &required("CHAIN_ANCHOR_CONTRACT")?,
-            )?,
-            keystore_file: PathBuf::from(required("CHAIN_KEYSTORE_FILE")?),
-            keystore_passphrase,
             confirmations: bounded("CHAIN_CONFIRMATIONS", 2, 1, 64)?,
-            interval: Duration::from_secs(bounded("CHAIN_INTERVAL_SECS", 60, 2, 86_400)?),
             max_fee_wei,
             tx_timeout: Duration::from_secs(bounded("CHAIN_TX_TIMEOUT_SECS", 180, 5, 3_600)?),
             rpc_timeout: Duration::from_secs(bounded("CHAIN_RPC_TIMEOUT_SECS", 20, 1, 300)?),
             poll: Duration::from_millis(bounded("CHAIN_POLL_MS", 1_500, 100, 60_000)?),
-            batch: bounded("CHAIN_BATCH_SIZE", 25, 1, 100)? as i64,
+            log_window: bounded("CHAIN_LOG_WINDOW", 2_000, 10, 1_000_000)?,
         })
-    }
-
-    /// The contract address as stored in the database: lower-case, 0x-prefixed.
-    pub fn contract_text(&self) -> String {
-        format!("{:#x}", self.anchor_contract)
     }
 
     /// The RPC endpoint without its path or query, which often carry an API key and must not reach a log.
@@ -127,6 +154,26 @@ impl Config {
             .map_or(self.rpc_url.as_str(), |(_, r)| r);
         let host = rest.split(['/', '?']).next().unwrap_or("");
         host.rsplit_once('@').map_or(host, |(_, h)| h).to_string()
+    }
+}
+
+impl Config {
+    pub fn from_env() -> R<Self> {
+        Ok(Self {
+            database_url: required("CHAIN_DATABASE_URL")?,
+            net: Net::from_env()?,
+            anchor_contract: anchor_contract_from_env()?,
+            issuer: issuer_from_env()?,
+            keystore_file: PathBuf::from(required("CHAIN_KEYSTORE_FILE")?),
+            keystore_passphrase: required("CHAIN_KEYSTORE_PASSPHRASE")?,
+            interval: Duration::from_secs(bounded("CHAIN_INTERVAL_SECS", 60, 2, 86_400)?),
+            batch: bounded("CHAIN_BATCH_SIZE", 25, 1, 100)? as i64,
+        })
+    }
+
+    /// The contract address as stored in the database: lower-case, 0x-prefixed.
+    pub fn contract_text(&self) -> String {
+        format!("{:#x}", self.anchor_contract)
     }
 }
 
@@ -156,13 +203,13 @@ mod tests {
 
     #[test]
     fn rpc_host_hides_keys() {
-        let mut c = sample();
-        c.rpc_url = "https://sepolia.example.io/v3/SECRETKEY?x=1".into();
-        assert_eq!(c.rpc_host(), "sepolia.example.io");
-        c.rpc_url = "https://user:pass@node.example:8545/".into();
-        assert_eq!(c.rpc_host(), "node.example:8545");
-        c.rpc_url = "http://anvil:8545".into();
-        assert_eq!(c.rpc_host(), "anvil:8545");
+        let mut n = sample().net;
+        n.rpc_url = "https://sepolia.example.io/v3/SECRETKEY?x=1".into();
+        assert_eq!(n.rpc_host(), "sepolia.example.io");
+        n.rpc_url = "https://user:pass@node.example:8545/".into();
+        assert_eq!(n.rpc_host(), "node.example:8545");
+        n.rpc_url = "http://anvil:8545".into();
+        assert_eq!(n.rpc_host(), "anvil:8545");
     }
 
     #[test]
@@ -180,17 +227,21 @@ mod tests {
     fn sample() -> Config {
         Config {
             database_url: String::new(),
-            rpc_url: String::new(),
-            chain_id: 1,
+            net: Net {
+                rpc_url: String::new(),
+                chain_id: 1,
+                confirmations: 1,
+                max_fee_wei: 1,
+                tx_timeout: Duration::from_secs(1),
+                rpc_timeout: Duration::from_secs(1),
+                poll: Duration::from_secs(1),
+                log_window: 100,
+            },
             anchor_contract: Address::ZERO,
+            issuer: None,
             keystore_file: PathBuf::new(),
             keystore_passphrase: String::new(),
-            confirmations: 1,
             interval: Duration::from_secs(1),
-            max_fee_wei: 1,
-            tx_timeout: Duration::from_secs(1),
-            rpc_timeout: Duration::from_secs(1),
-            poll: Duration::from_secs(1),
             batch: 1,
         }
     }

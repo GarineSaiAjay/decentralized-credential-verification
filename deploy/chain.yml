@@ -31,6 +31,9 @@ services:
       CHAIN_RPC_URL: ${CHAIN_RPC_URL:-}
       CHAIN_ID: ${CHAIN_ID:-}
       CHAIN_ANCHOR_CONTRACT: ${CHAIN_ANCHOR_CONTRACT:-}
+      # Optional: with these the worker also reports which signing-key changes wait for the issuer admin.
+      CHAIN_REGISTRY_CONTRACT: ${CHAIN_REGISTRY_CONTRACT:-}
+      CHAIN_ISSUER_ID: ${CHAIN_ISSUER_ID:-}
       CHAIN_KEYSTORE_FILE: /etc/acvs/chain/anchorer-keystore.json
       CHAIN_KEYSTORE_PASSPHRASE: ${CHAIN_KEYSTORE_PASSPHRASE:-}
       CHAIN_CONFIRMATIONS: ${CHAIN_CONFIRMATIONS:-}

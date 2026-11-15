@@ -109,12 +109,12 @@ pub async fn anchor_for(
     let onchain = match chain {
         Some(cfg) => {
             let found = onchain::receipts(db, cfg, &[b.height]).await?;
-            Some(onchain::view(
-                cfg,
-                found.get(&b.height),
-                &b.block_hash,
-                &b.merkle_root,
-            ))
+            let mut view = onchain::view(cfg, found.get(&b.height), &b.block_hash, &b.merkle_root);
+            // For a revoked credential: whether the revocation has reached the chain as well.
+            if c.status == "revoked" {
+                view["revocation"] = onchain::revocation(db, cfg, c.id).await?;
+            }
+            Some(view)
         }
         None => None,
     };

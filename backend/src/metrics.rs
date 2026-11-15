@@ -235,7 +235,7 @@ async fn database_gauges(st: &AppState, out: &mut String) {
     // Only when on-chain anchoring is configured; otherwise the output is exactly as before.
     if let Some(cfg) = &st.cfg.onchain {
         let q = crate::onchain::gauges(&st.db, cfg);
-        if let Ok(Ok((unanchored, mismatched, incidents))) =
+        if let Ok(Ok((unanchored, mismatched, incidents, unpublished, key_changes))) =
             tokio::time::timeout(std::time::Duration::from_secs(3), q).await
         {
             gauge(
@@ -255,6 +255,18 @@ async fn database_gauges(st: &AppState, out: &mut String) {
                 "acvs_onchain_open_incidents",
                 "Findings the on-chain worker stopped on and that are not resolved (must be 0)",
                 incidents,
+            );
+            gauge(
+                out,
+                "acvs_onchain_unpublished_revocations",
+                "Revoked credentials whose revocation is not on the chain yet",
+                unpublished,
+            );
+            gauge(
+                out,
+                "acvs_onchain_key_changes_pending",
+                "Signing-key changes that wait for the issuer admin's signature",
+                key_changes,
             );
         }
     }

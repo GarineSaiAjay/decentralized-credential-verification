@@ -30,10 +30,11 @@ PASS=$(grep '^SEED_DEMO_PASSWORD=' .env | cut -d= -f2)
 BASE=http://localhost:3000/api/v1
 RPC=http://127.0.0.1:8545
 KS="$T/chain/anchorer-keystore.json"
-# Anvil's public test accounts: #0 deploys, #1 is the issuer admin. The node signs for them itself
-# (--unlocked), so no private key appears in this repository.
+# Anvil's public test account #0 deploys; the node signs for it itself (--unlocked), so no private key
+# appears in this repository. The issuer admin is a real key, created below on a stand-in for the pen drive.
 DEPLOYER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-ADMIN=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+ADMIN_PASS=$(openssl rand -hex 16); NEW_PASS=$(openssl rand -hex 16)
+mkdir -p "$T/drive" "$T/drive-copy" "$T/new-drive"
 fails=0
 ok() { echo "  ok   $1"; }
 bad() { echo "  FAIL $1"; fails=$((fails + 1)); }
@@ -69,6 +70,19 @@ once() { dc run --rm --no-deps -T "$@" chain once 2>"$T/once.err"; } # one round
 # refused RUNNER SQL TEXT: true if running SQL through RUNNER (DB or AS_WORKER) is answered with TEXT.
 # (Not a pipe into grep: with pipefail, psql's own failure would hide a match.)
 refused() { local out; out=$("$1" "$2"); [[ "$out" == *"$3"* ]]; }
+# The acvs-chain program with the temporary folder mounted at /t (the "pen drives" and the plans live there).
+tool() { dc run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$T:/t" chain "$@"; }
+# sign PASSPHRASE DRIVE PLAN: what the admin does with the drive plugged in. The passphrase goes in on
+# standard input, never as an argument.
+sign() { echo "$1" | tool admin-sign --keystore "/t/$2/admin-keystore.json" --plan "/t/$3" --yes 2>&1; }
+# For the few steps where the test plays a party directly (not through the tools): Anvil signs for the address.
+as_admin() { cast send "$@" --unlocked --from "$ADMIN" -r $RPC >/dev/null 2>&1; }
+pending_keys() { call GET /ledger/blocks "$ADM"; echo "$BODY" | j "(d['onchain']['key_changes'] or {}).get('pending')"; }
+wait_keys() { for _ in $(seq 1 "$2"); do [ "$(pending_keys)" = "$1" ] && return 0; sleep 1; done; return 1; } # count seconds
+revocations() { DB "SELECT count(*) FROM chain_revocations WHERE credential_id = '$1' AND contract = '$LOWER'"; }
+wait_revocation() { for _ in $(seq 1 "$2"); do [ "$(revocations "$1")" = 1 ] && return 0; sleep 1; done; return 1; }
+is_revoked() { cast call "$LEDGER" 'isRevoked(uint64,uint64,uint32)(bool)' "$1" "$2" "$3" -r $RPC; } # epoch height leaf
+position() { DB "SELECT block_height || ' ' || leaf_index FROM credentials WHERE id = '$1'"; }
 verdicts() { for id in "$@"; do call GET "/verify/$id"; echo "$BODY" | j "d['verdict']"; done | sort | uniq -c | tr -s ' \n' ' '; }
 
 echo "== start (stack + local chain, no worker yet)"
@@ -102,6 +116,17 @@ OUT=$(dc run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$T/chain:/out" cha
 echo "$OUT" | grep -q 'refusing to overwrite' && ok "an existing key is never overwritten" || bad "overwrite not refused: $OUT"
 chmod 644 "$KS"
 cast rpc anvil_setBalance "$ANCHORER" 0x8AC7230489E80000 -r $RPC >/dev/null
+
+ADMIN=$(echo "$ADMIN_PASS" | tool admin-init /t/drive/admin-keystore.json 2>/dev/null | tr -d '\r')
+[[ "$ADMIN" =~ ^0x[0-9a-f]{40}$ ]] && [ "$ADMIN" != "$ANCHORER" ] && ok "issuer admin key created straight onto the drive ($ADMIN)" || { bad "admin-init: $ADMIN"; exit 1; }
+grep -q '"crypto"' "$T/drive/admin-keystore.json" && ! grep -q "$ADMIN_PASS" "$T/drive/admin-keystore.json" && ok "it is an encrypted keystore file" || bad "admin keystore looks wrong"
+OUT=$(echo "$ADMIN_PASS" | tool admin-init /t/drive/admin-keystore.json 2>&1); [[ "$OUT" == *'refusing to overwrite'* ]] && ok "an existing admin key is never overwritten" || bad "admin overwrite: $OUT"
+OUT=$(echo "too short" | tool admin-init /t/drive-copy/weak.json 2>&1); [[ "$OUT" == *'at least 20 characters'* ]] && [ ! -e "$T/drive-copy/weak.json" ] && ok "a short passphrase is refused and nothing is written" || bad "weak passphrase: $OUT"
+cp "$T/drive/admin-keystore.json" "$T/drive-copy/admin-keystore.json"
+OUT=$(echo "$ADMIN_PASS" | tool admin-check /t/drive/admin-keystore.json /t/drive-copy/admin-keystore.json 2>&1); [[ "$OUT" == *'every copy opens and holds the same key'* ]] && ok "the backup copy is checked to hold the same key" || bad "admin-check: $OUT"
+OUT=$(echo "not-the-passphrase-not-the-passphrase" | tool admin-check /t/drive/admin-keystore.json 2>&1); [[ "$OUT" == *'cannot open the keystore'* ]] && ok "a wrong passphrase does not open it" || bad "admin-check wrong passphrase: $OUT"
+cast rpc anvil_setBalance "$ADMIN" 0x8AC7230489E80000 -r $RPC >/dev/null
+cast rpc anvil_impersonateAccount "$ADMIN" -r $RPC >/dev/null
 OUT=$(cd contracts && ISSUER_ADMIN=$ADMIN ANCHORER=$ANCHORER ISSUER_NAME="Example University" ISSUER_DID="did:web:localhost%3A3000" \
   forge script script/Deploy.s.sol --rpc-url $RPC --unlocked --sender $DEPLOYER --broadcast 2>&1)
 LEDGER=$(echo "$OUT" | grep 'LedgerAnchor  ' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
@@ -112,6 +137,9 @@ export CHAIN_ANCHOR_CONTRACT=$LEDGER CHAIN_REGISTRY_CONTRACT=$REGISTRY CHAIN_ISS
 LOWER=$(echo "$LEDGER" | tr 'A-F' 'a-f')
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "worker database role created" || bad "chain-db-role.sh failed"
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "running the role script again is harmless" || bad "second run of chain-db-role.sh failed"
+tool plan accept-registry-ownership > "$T/p-registry.json" 2>/dev/null
+OUT=$(sign "$ADMIN_PASS" drive p-registry.json); [[ "$OUT" == *'done in transaction'* ]] && ok "the admin takes up ownership of the registry with a signed plan" || bad "accept registry ownership: $OUT"
+expect "the registry is now owned by the admin key" "$(cast call "$REGISTRY" 'owner()(address)' -r $RPC | tr 'A-F' 'a-f')" "$ADMIN"
 dc up -d --wait backend >/dev/null 2>&1 && ok "backend restarted with the contract address (display on)" || bad "backend did not restart"
 call GET /ledger/blocks "$ADM"
 expect "the API now reports every block as not anchored yet" "$(echo "$BODY" | j "[d['onchain']['unanchored'], sorted({b['onchain']['status'] for b in d['blocks']})]")" "[3, ['none']]"
@@ -124,9 +152,14 @@ OUT=$(dc run --rm --no-deps -T -e CHAIN_ANCHOR_CONTRACT=0x0000000000000000000000
 OUT=$(dc run --rm --no-deps -T -e CHAIN_KEYSTORE_PASSPHRASE=wrong-wrong-wrong-wrong chain check 2>&1); echo "$OUT" | grep -q 'cannot open the keystore' && ok "wrong keystore passphrase refused" || bad "wrong passphrase: $OUT"
 echo "$OUT" | grep -q 'wrong-wrong' && bad "the passphrase was printed" || ok "the passphrase is not printed"
 OUT=$(dc run --rm --no-deps -T -e CHAIN_DATABASE_URL=postgresql://acvs_chain:not-the-password@postgres:5432/acvs chain check 2>&1); echo "$OUT" | grep -qi 'password authentication failed' && ok "wrong database password refused" || bad "wrong db password: $OUT"
-cast send "$LEDGER" 'setAnchorer(address)' $DEPLOYER --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
+tool plan set-anchorer $DEPLOYER > "$T/p-anchorer.json" 2>/dev/null
+OUT=$(sign "$ADMIN_PASS" drive p-anchorer.json); [[ "$OUT" == *'done in transaction'* ]] && ok "the admin replaces the anchorer with a signed plan" || bad "set-anchorer: $OUT"
+[[ "$OUT" == *"$ADMIN_PASS"* ]] && bad "the admin passphrase was printed" || ok "the admin passphrase is not printed"
 OUT=$(dc run --rm --no-deps -T chain check 2>&1); echo "$OUT" | grep -q "but the contract's anchorer is" && ok "a key that is not the anchorer refused" || bad "not anchorer: $OUT"
-cast send "$LEDGER" 'setAnchorer(address)' "$ANCHORER" --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
+tool plan set-anchorer "$ANCHORER" > "$T/p-anchorer.json" 2>/dev/null
+sign "$ADMIN_PASS" drive p-anchorer.json >/dev/null
+OUT=$(sign "$ADMIN_PASS" drive p-anchorer.json); [[ "$OUT" == *'already done'* && "$OUT" != *'done in transaction'* ]] && ok "signing the same plan again changes nothing" || bad "repeat plan: $OUT"
+OUT=$(echo "$ADMIN_PASS" | tool admin-sign --keystore /t/chain/anchorer-keystore.json --plan /t/p-anchorer.json --yes 2>&1); [[ "$OUT" == *'cannot open the keystore'* ]] && ok "the worker's key file is not the admin key" || bad "anchorer keystore accepted: $OUT"
 expect "nothing was sent or written by any of that" "$(nonce)/$(DB 'SELECT count(*) FROM chain_anchors')" "0/0"
 
 echo "== the worker's database role can read the ledger and nothing more"
@@ -135,6 +168,9 @@ expect "can read public keys" "$(AS_WORKER "SELECT count(*) > 0 FROM (SELECT id,
 refused AS_WORKER 'SELECT private_key_enc FROM signing_keys' 'permission denied' && ok "cannot read the encrypted private keys" || bad "private keys readable"
 refused AS_WORKER 'SELECT student_name FROM credentials' 'permission denied' && ok "cannot read student names" || bad "names readable"
 refused AS_WORKER 'SELECT student_id FROM credentials' 'permission denied' && ok "cannot read student ids" || bad "student ids readable"
+expect "can read a signed revocation record" "$(AS_WORKER 'SELECT count(*) FROM (SELECT credential_id, kind, stage, reason, key_id, signature, ts, legacy FROM credential_events) e')" 0
+refused AS_WORKER 'SELECT actor_id FROM credential_events' 'permission denied' && ok "but not who made it" || bad "actor readable"
+refused AS_WORKER "UPDATE chain_sync_state SET key_changes_pending = 0" 'permission denied' && bad "cannot rewrite its own note" || ok "may rewrite its own note of pending key changes"
 refused AS_WORKER 'SELECT count(*) FROM users' 'permission denied' && ok "cannot read users" || bad "users readable"
 refused AS_WORKER 'SELECT count(*) FROM audit_logs' 'permission denied' && ok "cannot read the audit log" || bad "audit log readable"
 refused AS_WORKER "UPDATE credentials SET status = 'revoked'" 'permission denied' && ok "cannot change a credential" || bad "credentials writable"
@@ -199,26 +235,71 @@ expect "one more transaction" "$(nonce)" 2
 refused DB "UPDATE chain_anchors SET tx_hash = 'x' WHERE block_height = 1" 'append-only' && ok "receipts cannot be edited" || bad "receipt editable"
 refused DB "DELETE FROM chain_anchors WHERE block_height = 1" 'append-only' && ok "receipts cannot be deleted" || bad "receipt deletable"
 
-echo "== a credential file can be checked against the chain with the backend switched off"
-# The issuer admin lists the university's four signing keys in the registry (phase 5 automates this step).
-STAGE=0
-for role in faculty exam_cell registrar university; do
-  cast send "$REGISTRY" 'addKey(uint64,bytes32,uint8)' 1 "0x$(DB "SELECT public_key FROM signing_keys WHERE role = '$role' AND status = 'active'")" $STAGE --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
-  STAGE=$((STAGE + 1))
-done
+echo "== the university's signing keys reach the registry through a plan the admin signs"
 REGISTRAR_KEY=0x$(DB "SELECT public_key FROM signing_keys WHERE role = 'registrar' AND status = 'active'")
-expect "the university's keys are listed in the registry" "$(cast call "$REGISTRY" 'isKeyTrusted(uint64,bytes32)(bool)' 1 "$REGISTRAR_KEY" -r $RPC)" true
+trusted() { cast call "$REGISTRY" 'isKeyTrusted(uint64,bytes32)(bool)' 1 "$1" -r $RPC; }
+key_status() { cast call "$REGISTRY" 'keyInfo(uint64,bytes32)((uint8,uint8,uint64,uint64,uint64))' 1 "$1" -r $RPC | grep -oE '^\([0-9]+' | tr -d '('; }
+# The registry starts empty: the worker notices, and says what the admin has to sign.
+wait_keys 4 40 && ok "the worker reports four signing keys missing from the registry" || bad "pending key changes: $(pending_keys)"
+expect "metrics say the same" "$(dc exec -T backend curl -fsS http://localhost:9090/metrics | grep '^acvs_onchain_key_changes_pending ' | awk '{print $2}')" 4
+tool sync-keys > "$T/p-keys.json" 2> "$T/sync.err"
+expect "sync-keys writes them down as a plan, without any key" "$(j "[a['action'] + ':' + a['stage'] for a in d['actions']]" < "$T/p-keys.json")" "['add-key:faculty', 'add-key:exam_cell', 'add-key:registrar', 'add-key:university']"
+grep -q 'List signing key .* as the active registrar key' "$T/sync.err" && ok "and says each one in plain words" || bad "sync-keys text: $(cat "$T/sync.err")"
+expect "nothing is in the registry before the admin signs" "$(trusted "$REGISTRAR_KEY")" false
+OUT=$(sign "not-the-passphrase-not-the-passphrase" drive p-keys.json); [[ "$OUT" == *'cannot open the keystore'* ]] && [ "$(trusted "$REGISTRAR_KEY")" = false ] && ok "a wrong passphrase signs nothing" || bad "wrong passphrase: $OUT"
+OUT=$(echo "$ADMIN_PASS" | tool admin-sign --keystore /t/drive/admin-keystore.json --plan /t/p-keys.json 2>&1); [[ "$OUT" == *'add --yes'* ]] && [ "$(trusted "$REGISTRAR_KEY")" = false ] && ok "without a person to ask, it signs only when told to with --yes" || bad "no --yes: $OUT"
+OUT=$(sign "$ADMIN_PASS" drive p-keys.json)
+expect "the admin signs the plan: four transactions" "$(echo "$OUT" | grep -c 'done in transaction')" 4
+[[ "$OUT" == *'Registry entry: Example University'* ]] && ok "it names the registry entry it is about to change" || bad "no registry entry line: $OUT"
+expect "the university's keys are listed in the registry" "$(trusted "$REGISTRAR_KEY")" true
+wait_keys 0 40 && ok "the worker reports nothing left to sign" || bad "pending key changes after signing: $(pending_keys)"
+tool sync-keys > "$T/p-none.json" 2>/dev/null; expect "sync-keys agrees" "$(j "d['actions']" < "$T/p-none.json")" "[]"
+
+# A credential of its own for the revocation checks (it is not counted among the VALID ones later).
+new_block; REV_ID=$LAST_ID; REV_H=$LAST_H
+wait_receipt "$REV_H" 30 && ok "(block $REV_H sealed and anchored)" || bad "block $REV_H not anchored"
 V="$T/v"; mkdir -p "$V"
 curl -s "$BASE/credentials/${IDS[0]}/export" > "$V/public.json"
 expect "the full export needs a sign-in" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/credentials/${IDS[0]}/export-full")" 401
 curl -s -H "Authorization: Bearer $REG" "$BASE/credentials/${IDS[0]}/export-full" > "$V/full.json"
-curl -s -H "Authorization: Bearer $REG" "$BASE/credentials/${IDS[1]}/export-full" > "$V/to-be-revoked.json"
+curl -s -H "Authorization: Bearer $REG" "$BASE/credentials/$REV_ID/export-full" > "$V/to-be-revoked.json"
 expect "the public export names the anchor and the registry" "$(j "[d['evidence'][0]['chainId'], d['evidence'][0]['ledger'], d['evidence'][0]['registry'], d['evidence'][0]['issuerId']]" < "$V/public.json")" "[31337, '$LOWER', '$(echo "$REGISTRY" | tr 'A-F' 'a-f')', 1]"
 expect "and still leaves out the student ID" "$(grep -c 'S-1' "$V/public.json")" 0
 expect "the full export carries it, with the text the hash covers" "$(j "[d['credentialSubject']['studentId'], __import__('hashlib').sha256(d['hashedContent'].encode()).hexdigest() == d['credentialHash']]" < "$V/full.json")" "['S-1', True]"
 expect "the download is on the audit log" "$(DB "SELECT count(*) FROM audit_logs WHERE action = 'CREDENTIAL_EXPORTED_FULL'")" 2
+
+echo "== a revocation in ACVS is published on the chain by itself"
+SENT=$(nonce)
+call POST "/credentials/$REV_ID/revoke" "$ADM" '{"reason":"issued in error"}'; expect "revoke the credential in ACVS" "$CODE" 200
+wait_revocation "$REV_ID" 30 && ok "the worker publishes it without any manual step" || { bad "revocation not published"; dc logs --tail 20 chain; }
+read -r RH RL <<< "$(position "$REV_ID")"
+expect "the contract's revocation bit is set for that position" "$(is_revoked 1 "$RH" "$RL")" true
+expect "and for no other position in the block" "$(is_revoked 1 "$RH" "$((RL + 1))" 2>&1 | grep -c true)" 0
+expect "one transaction" "$(nonce)" "$((SENT + 1))"
+TX=$(DB "SELECT tx_hash FROM chain_revocations WHERE credential_id = '$REV_ID'")
+expect "the receipt names a real transaction to the contract" "$(cast tx "$TX" to -r $RPC | tr 'A-F' 'a-f')" "$LOWER"
+call GET "/verify/$REV_ID"
+expect "the verification page's data shows it as published" "$(echo "$BODY" | j "[d['verdict'], d['anchor']['onchain']['revocation']['published'], d['anchor']['onchain']['revocation']['tx_hash'] == '$TX']")" "['REVOKED', True, True]"
+call GET /ledger/blocks "$ADM"; expect "no revocation is left unpublished" "$(echo "$BODY" | j "d['onchain']['unpublished_revocations']")" 0
+refused DB "DELETE FROM chain_revocations" 'append-only' && ok "revocation receipts cannot be deleted" || bad "revocation receipt deletable"
+sleep 4; expect "it is not sent again on later rounds" "$(nonce)" "$((SENT + 1))"
+
+echo "== a key rotation in ACVS reaches the registry once the admin signs"
+call POST /keys/registrar/rotate "$ADM"; expect "rotate the registrar key in ACVS" "$CODE" 200
+NEW_REGISTRAR_KEY=0x$(DB "SELECT public_key FROM signing_keys WHERE role = 'registrar' AND status = 'active'")
+wait_keys 2 40 && ok "the worker reports two changes waiting" || bad "pending key changes after rotation: $(pending_keys)"
+call GET /ledger/blocks "$ADM"; echo "$BODY" | j "d['onchain']['key_changes']['changes']" | grep -q 'as replaced' && ok "the ledger page's data lists them in plain words" || bad "no change text"
+tool sync-keys > "$T/p-rotate.json" 2>/dev/null
+expect "the plan retires the old key, then lists the new one" "$(j "[a['action'] for a in d['actions']]" < "$T/p-rotate.json")" "['retire-key', 'add-key']"
+OUT=$(sign "$ADMIN_PASS" drive p-rotate.json); expect "the admin signs: two transactions" "$(echo "$OUT" | grep -c 'done in transaction')" 2
+expect "the old key is marked retired in the registry (2 = retired)" "$(key_status "$REGISTRAR_KEY")" 2
+expect "what it signed is still trusted" "$(trusted "$REGISTRAR_KEY")" true
+expect "the new key is the active one" "$(cast call "$REGISTRY" 'activeKey(uint64,uint8)(bytes32)' 1 2 -r $RPC)" "$NEW_REGISTRAR_KEY"
+wait_keys 0 40 && ok "nothing is left to sign" || bad "pending key changes after rotation was signed: $(pending_keys)"
+
+echo "== the verifier page, with the backend switched off"
 DID=$(curl -s http://localhost:3000/.well-known/did.json)
-expect "the site publishes its DID document with the four keys" "$(echo "$DID" | j "[d['id'], len(d['verificationMethod'])]")" "['did:web:localhost%3A3000', 4]"
+expect "the site publishes its DID document: the four active keys and the replaced one" "$(echo "$DID" | j "[d['id'], len(d['verificationMethod']), sorted(m['acvsStatus'] for m in d['verificationMethod'])]")" "['did:web:localhost%3A3000', 5, ['active', 'active', 'active', 'active', 'retired']]"
 cast call "$REGISTRY" 'issuer(uint64)((address,address,address,bool,uint64,string,string))' 1 -r $RPC | grep -q 'did:web:localhost%3A3000' && ok "which is the DID the registry lists" || bad "registry DID differs"
 expect "the DID document lists the key the registry lists" "$(echo "$DID" | j "'${REGISTRAR_KEY#0x}' in [m['acvsPublicKeyHex'] for m in d['verificationMethod']]")" True
 if [ -d e2e/node_modules ]; then
@@ -238,8 +319,6 @@ d = copy.deepcopy(full); del d["evidence"]; save("no-evidence", d)
 d = copy.deepcopy(public); d["credentialSubject"]["studentName"] = "Someone Else"; save("public-changed-name", d)
 PY
   node e2e/verifier.mjs forge "$V/full.json" "$V/forged-with-own-keys.json"
-  call GET "/verify/${IDS[1]}"
-  cast send "$LEDGER" 'revoke(uint64,uint64,uint32)' 1 "$(echo "$BODY" | j "d['anchor']['height']")" "$(echo "$BODY" | j "d['anchor']['leaf_index']")" --keystore "$KS" --password "$CHAIN_KEYSTORE_PASSPHRASE" -r $RPC >/dev/null 2>&1
   dc stop backend frontend >/dev/null 2>&1
   expect "(the backend is stopped)" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$BASE/ledger/verify")" 000
   vcheck() { node e2e/verifier.mjs check "$PWD/verifier/index.html" "$@" > "$T/v.out" 2>&1; cat "$T/v.out"; fails=$((fails + $(grep -c '^  FAIL' "$T/v.out"))); }
@@ -252,11 +331,11 @@ PY
   echo "  -- the chain node cannot be reached"
   vcheck http://127.0.0.1:9 yes "$V/full.json=COULD NOT BE CHECKED"
   echo "  -- the registry owner suspends the issuer, then reinstates it"
-  cast send "$REGISTRY" 'suspendIssuer(uint64,string)' 1 "test" --unlocked --from $DEPLOYER -r $RPC >/dev/null 2>&1
+  as_admin "$REGISTRY" 'suspendIssuer(uint64,string)' 1 "test"
   vcheck $RPC yes "$V/full.json=INVALID=issuer is listed"
-  cast send "$REGISTRY" 'reinstateIssuer(uint64,string)' 1 "test" --unlocked --from $DEPLOYER -r $RPC >/dev/null 2>&1
+  as_admin "$REGISTRY" 'reinstateIssuer(uint64,string)' 1 "test"
   echo "  -- the issuer admin revokes a signing key as compromised"
-  cast send "$REGISTRY" 'revokeKey(uint64,bytes32,string)' 1 "$REGISTRAR_KEY" "test" --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
+  as_admin "$REGISTRY" 'revokeKey(uint64,bytes32,string)' 1 "$REGISTRAR_KEY" "test"
   vcheck $RPC yes "$V/full.json=INVALID=registrar key"
   dc up -d --wait backend frontend >/dev/null 2>&1 && ok "backend started again" || bad "backend did not come back"
 elif [ -n "${CHAIN_TEST_UI:-}" ]; then
@@ -273,13 +352,14 @@ grep -q 'another acvs-chain worker is already running' "$T/once.err" && ok "and 
 echo "== the chain is unreachable: sealing and verification carry on, anchoring catches up later"
 dc pause anvil >/dev/null 2>&1
 new_block; IDS+=("$LAST_ID")
-expect "a block can still be sealed" "$LAST_H" 5
+[ -n "$LAST_H" ] && ok "a block can still be sealed (block $LAST_H)" || bad "sealing failed during the outage"
+OUTAGE_H=$LAST_H
 call GET "/verify/$LAST_ID"; expect "its credential is VALID" "$(echo "$BODY" | j "d['verdict']")" VALID
 sleep 8
-expect "no receipt was invented meanwhile" "$(receipts 5)" 0
+expect "no receipt was invented meanwhile" "$(receipts "$OUTAGE_H")" 0
 [ "$(dc ps --status running --services | grep -c '^chain$')" = 1 ] && ok "the worker is still running" || bad "the worker died"
 dc unpause anvil >/dev/null 2>&1
-wait_receipt 5 40 && ok "block 5 anchored once the chain is back" || bad "block 5 not anchored after the outage"
+wait_receipt "$OUTAGE_H" 40 && ok "block $OUTAGE_H anchored once the chain is back" || bad "block $OUTAGE_H not anchored after the outage"
 
 echo "== the worker dies between sending and recording: the next start records it, with no second transaction"
 dc stop chain >/dev/null 2>&1
@@ -294,6 +374,21 @@ wait_receipt "$LAST_H" 30 && ok "the receipt is written on the next start" || ba
 expect "no second transaction was sent" "$(nonce)" "$SENT"
 expect "the receipt names the original transaction" "$(DB "SELECT tx_hash FROM chain_anchors WHERE block_height = $LAST_H")" \
   "$(cast logs --from-block 0 --address "$LEDGER" 'Anchored(uint64 indexed,uint64 indexed,bytes32,bytes32,uint32)' 1 "$LAST_H" -r $RPC --json | j "d[0]['transactionHash']")"
+
+echo "== a revocation whose receipt was lost is recorded from the chain, not sent twice"
+new_block; REV2_ID=$LAST_ID
+wait_receipt "$LAST_H" 30 || bad "block $LAST_H not anchored"
+dc stop chain >/dev/null 2>&1
+call POST "/credentials/$REV2_ID/revoke" "$ADM" '{"reason":"issued in error"}'
+read -r RH RL <<< "$(position "$REV2_ID")"
+TX=$(cast send "$LEDGER" 'revoke(uint64,uint64,uint32)' 1 "$RH" "$RL" --keystore "$KS" --password "$CHAIN_KEYSTORE_PASSPHRASE" -r $RPC --json | j "d['transactionHash']")
+SENT=$(nonce)
+expect "(the bit is set on the chain, the receipt is not in the database)" "$(is_revoked 1 "$RH" "$RL")/$(revocations "$REV2_ID")" "true/0"
+call GET /ledger/blocks "$ADM"; expect "the ledger page's data counts it as not yet published" "$(echo "$BODY" | j "d['onchain']['unpublished_revocations']")" 1
+dc up -d chain >/dev/null 2>&1
+wait_revocation "$REV2_ID" 30 && ok "the receipt is written on the next start" || { bad "revocation receipt missing"; dc logs --tail 20 chain; }
+expect "no second transaction was sent" "$(nonce)" "$SENT"
+expect "the receipt names the original transaction" "$(DB "SELECT tx_hash FROM chain_revocations WHERE credential_id = '$REV2_ID'")" "$TX"
 
 echo "== the network fee is above the limit: nothing is sent"
 dc stop chain >/dev/null 2>&1
@@ -366,8 +461,10 @@ expect "later blocks are not anchored while the incident stands" "$(receipts "$L
 echo "== the issuer admin starts a new epoch: anchoring resumes, history stays"
 OUT=$(cast send "$LEDGER" 'startEpoch(uint64,string)' "$MISMATCH_H" "restored backup" --keystore "$KS" --password "$CHAIN_KEYSTORE_PASSPHRASE" -r $RPC 2>&1)
 echo "$OUT" | grep -qi 'revert\|OwnableUnauthorizedAccount\|error' && ok "the worker's key cannot start an epoch" || bad "anchorer started an epoch: $OUT"
-cast send "$LEDGER" 'startEpoch(uint64,string)' "$MISMATCH_H" "restored backup" --unlocked --from $ADMIN -r $RPC >/dev/null 2>&1
-expect "the admin key can" "$(cast call "$LEDGER" 'epoch()(uint64)' -r $RPC)" 2
+tool plan start-epoch "$MISMATCH_H" "restored backup" > "$T/p-epoch.json" 2> "$T/plan.err"
+grep -q "Start a new ledger epoch that anchors again from block $MISMATCH_H" "$T/plan.err" && ok "the plan says what it does in plain words" || bad "plan text: $(cat "$T/plan.err")"
+OUT=$(sign "$ADMIN_PASS" drive p-epoch.json); [[ "$OUT" == *'done in transaction'* ]] && ok "the admin signs the new epoch from the drive" || bad "start-epoch: $OUT"
+expect "the contract is in epoch 2" "$(cast call "$LEDGER" 'epoch()(uint64)' -r $RPC)" 2
 wait_receipt "$LAST_H" 40 && ok "blocks $MISMATCH_H and $LAST_H anchored in the new epoch" || { bad "not anchored after the new epoch"; dc logs --tail 20 chain; }
 expect "the receipts name epoch 2" "$(DB "SELECT string_agg(epoch::text, ',' ORDER BY block_height) FROM chain_anchors WHERE block_height >= $MISMATCH_H")" "2,2"
 expect "earlier receipts stay in epoch 1" "$(DB "SELECT count(*) FROM chain_anchors WHERE epoch = 1")" "$KEPT"
@@ -379,6 +476,35 @@ expect "but is no longer reported as open" "$(echo "$BODY" | j "[d['onchain']['o
 call GET "/ledger/blocks/$MISMATCH_H/anchor"; expect "the receipt shows the new epoch" "$(echo "$BODY" | j "[d['status'], d['epoch']]")" "['ok', 2]"
 expect "all credentials VALID" "$(verdicts "${IDS[@]}")" " ${#IDS[@]} VALID "
 call GET /ledger/verify; expect "the ledger verifies" "$(echo "$BODY" | j "d['ok']")" True
+
+echo "== the drive is lost: the backup copy moves the admin role to a new key"
+NEW_ADMIN=$(echo "$NEW_PASS" | tool admin-init /t/new-drive/admin-keystore.json 2>/dev/null | tr -d '\r')
+cast rpc anvil_setBalance "$NEW_ADMIN" 0x8AC7230489E80000 -r $RPC >/dev/null
+tool plan transfer-admin "$NEW_ADMIN" > "$T/p-transfer.json" 2>/dev/null
+OUT=$(sign "$ADMIN_PASS" drive-copy p-transfer.json); expect "the backup copy offers the role to the new key (ledger and registry)" "$(echo "$OUT" | grep -c 'done in transaction')" 2
+expect "nothing moves until the new key accepts" "$(cast call "$LEDGER" 'owner()(address)' -r $RPC | tr 'A-F' 'a-f')" "$ADMIN"
+tool plan accept-admin > "$T/p-accept.json" 2>/dev/null
+OUT=$(sign "$ADMIN_PASS" drive p-accept.json); [[ "$OUT" == *'no admin role has been offered to this key'* ]] && ok "only the key it was offered to can accept" || bad "old key accepted: $OUT"
+OUT=$(sign "$NEW_PASS" new-drive p-accept.json); expect "the new key accepts both" "$(echo "$OUT" | grep -c 'done in transaction')" 2
+expect "the ledger contract is owned by the new key" "$(cast call "$LEDGER" 'owner()(address)' -r $RPC | tr 'A-F' 'a-f')" "$NEW_ADMIN"
+cast call "$REGISTRY" 'issuer(uint64)((address,address,address,bool,uint64,string,string))' 1 -r $RPC | tr 'A-F' 'a-f' | grep -q "^($NEW_ADMIN" && ok "and so is the registry entry" || bad "registry admin did not move"
+tool plan start-epoch 1 "the lost drive tries again" > "$T/p-old.json" 2>/dev/null
+OUT=$(sign "$ADMIN_PASS" drive p-old.json); [[ "$OUT" == *'not the issuer admin'* ]] && ok "the lost key can no longer change anything" || bad "old key still works: $OUT"
+expect "(the contract is still in epoch 2)" "$(cast call "$LEDGER" 'epoch()(uint64)' -r $RPC)" 2
+tool plan start-epoch "$(next_height)" "a new admin key is in use" > "$T/p-new.json" 2>/dev/null
+OUT=$(sign "$NEW_PASS" new-drive p-new.json); [[ "$OUT" == *'done in transaction'* ]] && [ "$(cast call "$LEDGER" 'epoch()(uint64)' -r $RPC)" = 3 ] && ok "the new key signs for the issuer from now on" || bad "new key cannot sign: $OUT"
+
+echo "== a revocation whose signed record does not verify is not published"
+dc stop chain >/dev/null 2>&1
+call POST "/credentials/${IDS[0]}/revoke" "$ADM" '{"reason":"the real reason"}'; expect "(a credential is revoked)" "$CODE" 200
+DB "ALTER TABLE credential_events DISABLE TRIGGER USER; UPDATE credential_events SET reason = 'edited afterwards' WHERE credential_id = '${IDS[0]}'; ALTER TABLE credential_events ENABLE TRIGGER USER" >/dev/null
+read -r RH RL <<< "$(position "${IDS[0]}")"
+SENT=$(nonce)
+OUT=$(once); RC=$?
+expect "the round reports a problem" "$RC" 1
+expect "as a revocation_invalid incident" "$(echo "$OUT" | j "d['incidents'][0]['kind']")" revocation_invalid
+echo "  info $(echo "$OUT" | j "d['incidents'][0]['detail']['reason']")"
+expect "nothing was sent, the bit is not set, no receipt" "$(nonce)/$(is_revoked 1 "$RH" "$RL")/$(revocations "${IDS[0]}")" "$SENT/false/0"
 
 echo "== a block that fails the ledger's own checks is never anchored"
 dc stop chain >/dev/null 2>&1

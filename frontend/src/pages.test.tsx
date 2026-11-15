@@ -333,6 +333,48 @@ describe('on-chain anchors', () => {
     expect(link).toHaveAttribute('href', 'https://explorer.test/tx/0xfff');
   });
 
+  it('lists the key changes that wait for the issuer admin, and unpublished revocations', async () => {
+    serve({ body: { blocks: [block(1, anchored)], next: null, pending_unanchored: 0, timestamping: null, onchain: overview({
+      unpublished_revocations: 2,
+      key_changes: { pending: 2, changes: ['Mark signing key ab12… as replaced', 'List signing key cd34… as the active registrar key'], warnings: ['the registry owner has suspended this issuer'], checked_at: '2026-11-14T10:00:00Z' },
+    }) } });
+    render(<Ledger role="auditor" />);
+    expect(await screen.findByText(/2 signing-key change\(s\) wait for the issuer admin's signature/)).toBeInTheDocument();
+    expect(screen.getByText('Mark signing key ab12… as replaced')).toBeInTheDocument();
+    expect(screen.getByText('List signing key cd34… as the active registrar key')).toBeInTheDocument();
+    expect(screen.getByText('Issuer registry: the registry owner has suspended this issuer')).toHaveClass('err');
+    expect(screen.getByText('2 revocation(s) not yet published on the public chain.')).toBeInTheDocument();
+  });
+
+  it('says nothing about keys or revocations when none wait', async () => {
+    serve({ body: { blocks: [block(1, anchored)], next: null, pending_unanchored: 0, timestamping: null, onchain: overview({ unpublished_revocations: 0, key_changes: { pending: 0, changes: [], warnings: [], checked_at: '2026-11-14T10:00:00Z' } }) } });
+    render(<Ledger role="auditor" />);
+    await screen.findByText(/Every block is anchored\./);
+    expect(screen.queryByText(/wait for the issuer admin/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not yet published/)).not.toBeInTheDocument();
+  });
+
+  it('shows whether a revocation has reached the chain', async () => {
+    const revoked = (revocation: unknown) => verification({ verdict: 'REVOKED', anchor: anchor({ ...anchored, revocation }) });
+    serve({ body: revoked({ published: false }) });
+    const { unmount } = render(<Verify id="c1" />);
+    expect(await screen.findByText(/not yet published on the public chain/)).toHaveClass('muted');
+    expect(screen.getByText('REVOKED')).toBeInTheDocument();
+    unmount();
+
+    serve({ body: revoked({ published: true, tx_hash: '0xdead', revoked_at: '2026-11-14T11:00:00Z', explorer_url: 'https://explorer.test/tx/0xdead' }) });
+    const second = render(<Verify id="c1" />);
+    const link = await screen.findByRole('link', { name: `published ${new Date('2026-11-14T11:00:00Z').toLocaleString()}` });
+    expect(link).toHaveAttribute('href', 'https://explorer.test/tx/0xdead');
+    second.unmount();
+
+    // A credential that is not revoked has no such line.
+    serve({ body: verification({ anchor: anchor(anchored) }) });
+    render(<Verify id="c1" />);
+    await screen.findByText('On-chain anchor');
+    expect(screen.queryByText('On-chain revocation')).not.toBeInTheDocument();
+  });
+
   it('tells a waiting block from a mismatch on the verification page', async () => {
     serve({ body: verification({ anchor: anchor({ status: 'none' }) }) });
     const { unmount } = render(<Verify id="c1" />);
