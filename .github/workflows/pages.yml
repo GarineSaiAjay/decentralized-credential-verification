@@ -1,0 +1,39 @@
+name: Pages
+
+# Publishes the standalone credential verifier (verifier/index.html) as a static site at
+# https://<account>.github.io/<repository>/. The page loads nothing from anywhere and talks only to the chain
+# node the visitor names, so hosting it here adds no trust in this server. Pages must be switched to
+# "GitHub Actions" under Settings > Pages (done once).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "verifier/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer one replaces an older one that has not finished.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Only the page itself is published, not the folder's README or anything else.
+      - run: mkdir _site && cp verifier/index.html _site/index.html
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with: { path: _site }
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
