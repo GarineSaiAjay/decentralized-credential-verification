@@ -9,7 +9,7 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 ///   "is this a recognised issuer?" and "is this Ed25519 key one of its own, and is it still trusted?"
 ///
 /// Roles:
-///   - the registry owner lists issuers and can suspend one (a governance role; see docs/ONCHAIN-PLAN.md);
+///   - the registry owner lists issuers and can suspend one (a governance role; see contracts/README.md);
 ///   - each issuer's admin (kept offline) manages that issuer's keys and its ledger contract address.
 ///
 /// Key statuses mirror the backend's `signing_keys.status` and only move forward:

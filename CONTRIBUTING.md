@@ -8,8 +8,8 @@ For security problems, do **not** open a public issue; see [SECURITY.md](SECURIT
 Prerequisites: Docker with Compose, Rust (stable, with `rustfmt` and `clippy`), Node.js 22.
 
 ```bash
-git clone https://github.com/<your-fork>/academic-credential-verification.git
-cd academic-credential-verification
+git clone https://github.com/<your-fork>/decentralized-credential-verification.git
+cd decentralized-credential-verification
 ./scripts/gen-env.sh                 # writes .env with random secrets (once)
 docker compose up -d postgres        # Postgres on 127.0.0.1:55432
 ```

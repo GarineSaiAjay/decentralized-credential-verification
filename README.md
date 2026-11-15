@@ -1,4 +1,16 @@
-# ACVS - Academic Credential Verification
+# Decentralized Credential Verification
+
+Academic credentials that anyone can verify **without contacting the university**. A signed, tamper-evident
+issuing workflow (Rust and PostgreSQL) whose ledger is also anchored to a public blockchain (Solidity, EVM),
+with Verifiable-Credential-style exports and a standalone verifier page that needs only the credential file
+and a public chain node.
+
+> **Built on [ACVS](https://github.com/GarineSaiAjay/academic-credential-verification)**, my earlier Academic
+> Credential Verification System. ACVS provides the issuing workflow, signatures and ledger described below;
+> this project adds the optional [on-chain layer](#anchoring-the-ledger-to-a-public-blockchain-optional) on
+> top of it without changing how ACVS works. "ACVS" remains the name of the core system in the code and scripts.
+
+## The core system (ACVS)
 
 Tamper-evident academic credentials. Four stages sign each credential with their own Ed25519 key
 (Faculty -> Exam Cell -> Registrar -> University). Anyone can verify one, without an account, by ID or QR code.
