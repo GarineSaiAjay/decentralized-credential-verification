@@ -127,12 +127,20 @@ OUT=$(echo "$ADMIN_PASS" | tool admin-check /t/drive/admin-keystore.json /t/driv
 OUT=$(echo "not-the-passphrase-not-the-passphrase" | tool admin-check /t/drive/admin-keystore.json 2>&1); [[ "$OUT" == *'cannot open the keystore'* ]] && ok "a wrong passphrase does not open it" || bad "admin-check wrong passphrase: $OUT"
 cast rpc anvil_setBalance "$ADMIN" 0x8AC7230489E80000 -r $RPC >/dev/null
 cast rpc anvil_impersonateAccount "$ADMIN" -r $RPC >/dev/null
-OUT=$(cd contracts && ISSUER_ADMIN=$ADMIN ANCHORER=$ANCHORER ISSUER_NAME="Example University" ISSUER_DID="did:web:localhost%3A3000" \
-  forge script script/Deploy.s.sol --rpc-url $RPC --unlocked --sender $DEPLOYER --broadcast 2>&1)
-LEDGER=$(echo "$OUT" | grep 'LedgerAnchor  ' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
-[ -n "$LEDGER" ] && ok "contracts deployed to the local chain (LedgerAnchor $LEDGER)" || { bad "deployment failed: $(echo "$OUT" | tail -5)"; exit 1; }
+# The deployment is signed by the anchorer key, which holds funds anyway; no third key is involved.
+deploy() { ISSUER_ADMIN=$ADMIN ISSUER_NAME="Example University" ISSUER_DID="did:web:localhost%3A3000" CHAIN_DEPLOY_RPC_URL=$RPC scripts/chain-deploy.sh "$@" 2>&1; }
+OUT=$(deploy < /dev/null); [[ "$OUT" == *'add --yes'* ]] && ok "the deployment asks first, and without a person to ask it needs --yes" || bad "deploy without --yes: $OUT"
+OUT=$(CHAIN_ID=11155111 deploy --yes); [[ "$OUT" == *'the node is chain 31337, but CHAIN_ID is 11155111'* ]] && ok "it refuses to deploy to a different network than the one configured" || bad "deploy wrong network: $OUT"
+cast rpc anvil_setBalance "$ANCHORER" 0x0 -r $RPC >/dev/null
+OUT=$(deploy --yes); [[ "$OUT" == *'holds no funds'* ]] && ok "and with an unfunded key it says so before sending anything" || bad "deploy unfunded: $OUT"
+cast rpc anvil_setBalance "$ANCHORER" 0x8AC7230489E80000 -r $RPC >/dev/null
+OUT=$(deploy --yes)
+LEDGER=$(echo "$OUT" | grep '^CHAIN_ANCHOR_CONTRACT=' | cut -d= -f2)
+[ -n "$LEDGER" ] && ok "contracts deployed to the local chain by scripts/chain-deploy.sh (LedgerAnchor $LEDGER)" || { bad "deployment failed: $(echo "$OUT" | tail -5)"; exit 1; }
+[[ "$OUT" == *"$CHAIN_KEYSTORE_PASSPHRASE"* ]] && bad "the deployment printed the keystore passphrase" || ok "the keystore passphrase is not printed"
 rm -rf contracts/broadcast contracts/cache/Deploy.s.sol
-REGISTRY=$(echo "$OUT" | grep 'IssuerRegistry  ' | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
+REGISTRY=$(echo "$OUT" | grep '^CHAIN_REGISTRY_CONTRACT=' | cut -d= -f2)
+BASE_NONCE=$(nonce) # the anchorer's transactions so far are the deployment's
 export CHAIN_ANCHOR_CONTRACT=$LEDGER CHAIN_REGISTRY_CONTRACT=$REGISTRY CHAIN_ISSUER_ID=1
 LOWER=$(echo "$LEDGER" | tr 'A-F' 'a-f')
 scripts/chain-db-role.sh >/dev/null 2>&1 && ok "worker database role created" || bad "chain-db-role.sh failed"
@@ -160,7 +168,7 @@ tool plan set-anchorer "$ANCHORER" > "$T/p-anchorer.json" 2>/dev/null
 sign "$ADMIN_PASS" drive p-anchorer.json >/dev/null
 OUT=$(sign "$ADMIN_PASS" drive p-anchorer.json); [[ "$OUT" == *'already done'* && "$OUT" != *'done in transaction'* ]] && ok "signing the same plan again changes nothing" || bad "repeat plan: $OUT"
 OUT=$(echo "$ADMIN_PASS" | tool admin-sign --keystore /t/chain/anchorer-keystore.json --plan /t/p-anchorer.json --yes 2>&1); [[ "$OUT" == *'cannot open the keystore'* ]] && ok "the worker's key file is not the admin key" || bad "anchorer keystore accepted: $OUT"
-expect "nothing was sent or written by any of that" "$(nonce)/$(DB 'SELECT count(*) FROM chain_anchors')" "0/0"
+expect "nothing was sent or written by any of that" "$(nonce)/$(DB 'SELECT count(*) FROM chain_anchors')" "$BASE_NONCE/0"
 
 echo "== the worker's database role can read the ledger and nothing more"
 expect "can read blocks" "$(AS_WORKER 'SELECT count(*) FROM blocks')" 3
@@ -183,7 +191,7 @@ echo "== catching up: the existing blocks are anchored, and nothing else changes
 dc up -d chain >/dev/null 2>&1
 wait_receipt 3 40 && ok "blocks 1-3 anchored without any manual step" || { bad "blocks were not anchored"; dc logs --tail 20 chain; }
 expect "one transaction covered all three" "$(DB "SELECT count(DISTINCT tx_hash) || '/' || count(*) FROM chain_anchors")" "1/3"
-expect "the anchorer sent exactly one transaction" "$(nonce)" 1
+expect "the anchorer sent exactly one transaction" "$(nonce)" "$((BASE_NONCE + 1))"
 for h in 1 2 3; do expect "the contract holds block $h's hash" "$(on_chain 1 $h)" "$(db_hash $h)"; done
 expect "receipts match the blocks" "$(DB "SELECT count(*) FROM chain_anchors a JOIN blocks b ON b.height = a.block_height AND b.block_hash = a.block_hash AND b.merkle_root = a.merkle_root AND jsonb_array_length(b.leaves) = a.leaf_count")" 3
 expect "the contract expects block 4 next" "$(next_height)" 4
@@ -231,7 +239,7 @@ echo "== a newly sealed block is anchored by itself"
 new_block; IDS+=("$LAST_ID")
 wait_receipt "$LAST_H" 30 && ok "block $LAST_H anchored within seconds of sealing" || bad "block $LAST_H not anchored"
 expect "the contract holds its hash" "$(on_chain 1 "$LAST_H")" "$(db_hash "$LAST_H")"
-expect "one more transaction" "$(nonce)" 2
+expect "one more transaction" "$(nonce)" "$((BASE_NONCE + 2))"
 refused DB "UPDATE chain_anchors SET tx_hash = 'x' WHERE block_height = 1" 'append-only' && ok "receipts cannot be edited" || bad "receipt editable"
 refused DB "DELETE FROM chain_anchors WHERE block_height = 1" 'append-only' && ok "receipts cannot be deleted" || bad "receipt deletable"
 

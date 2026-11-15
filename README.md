@@ -184,6 +184,62 @@ openssl ts -verify -queryfile timestamp.tsq -in timestamp.tsr -CAfile tsa-ca.pem
 - `scripts/timestamp-test.sh` runs the whole flow against a throwaway authority that can answer correctly, with an untrusted
   key, with garbage, or not at all (also run in CI).
 
+## Anchoring the ledger to a public blockchain (optional)
+
+A time-stamping authority proves *when* a block existed, but a verifier still has to ask this server for
+everything else. The optional on-chain layer removes that: each sealed block's hash and Merkle root are
+also written to a smart contract on an EVM chain, the university's signing keys are listed in a public
+registry, and revocations are published there. An employer can then check an exported credential with a
+public chain node and **without contacting this server**.
+
+**It is off unless you add it, and it cannot hurt the ledger:**
+
+- `docker-compose.yml` and the approval workflow are unchanged. The layer is added with a second compose
+  file, `deploy/chain.yml`.
+- The backend never talks to a chain and holds no chain key. A separate worker, `acvs-chain`, does, with
+  its own database role that can read the ledger and write only its own receipt tables.
+- A receipt never changes a credential's verdict. With the settings unset, every response is exactly as
+  it is without the layer.
+- **No personal data goes on-chain.** Only block hashes, Merkle roots, public keys and positions
+  (block height + leaf index) do. A credential hash covers a name and a student ID, so it is never published.
+
+| Part | Where | What it is |
+|---|---|---|
+| Contracts | [`contracts/`](contracts/README.md) | `IssuerRegistry` (universities and their keys) and `LedgerAnchor` (block anchors and revocation bits) |
+| Worker and admin tools | [`chain/`](chain/README.md) | `acvs-chain`: anchors blocks, publishes revocations, and prepares what the issuer admin signs |
+| Verifier | [`verifier/`](verifier/README.md) | One static page that checks a credential file against the chain alone |
+
+**Two keys.** The worker's *anchorer* key can only anchor blocks and set revocation bits. The *issuer
+admin* key (kept offline, for example on a pen drive) manages the registry, replaces the anchorer and
+starts a new epoch. Nothing already anchored can be changed by either.
+
+```bash
+scripts/chain-setup.sh                         # local secrets and the anchorer key; prints its address
+acvs-chain admin-init /Volumes/DRIVE/admin-keystore.json          # the admin key, on the drive; prints its address
+# in .env: CHAIN_RPC_URL=...  CHAIN_ID=...   then send both addresses a little of the network's currency
+ISSUER_ADMIN=0x... ISSUER_NAME="Example University" ISSUER_DID="did:web:credentials.example.edu" \
+  scripts/chain-deploy.sh --write-env          # deploys both contracts; adds their addresses to .env
+docker compose up -d && scripts/chain-db-role.sh
+docker compose -f docker-compose.yml -f deploy/chain.yml up -d    # the worker starts anchoring
+# with the drive plugged in: take up registry ownership and list the signing keys (chain/README.md)
+```
+
+- **What you see:** the Ledger page gains an "On-chain" column and says what still waits (blocks,
+  revocations, key changes for the admin). The Verify page shows the anchor and, for a revoked
+  credential, whether the revocation has been published. `GET /ledger/blocks/:n/anchor` returns a block's
+  receipt.
+- **What a verifier needs:** the exported credential file. The public export proves that the university
+  signed and anchored a credential with that ID and has not revoked it. The *full* export (signed-in
+  staff, handed to the graduate) also proves every field, because it carries the student ID the hash covers.
+- **Networks:** a local Anvil node for development and tests, and Ethereum Sepolia (a free test network)
+  for a public demonstration. Nothing here requires a paid network.
+- **Limits:** key changes made in ACVS reach the registry only when the issuer admin signs them, and a
+  revocation reaches the chain on the worker's next round; until then the standalone verifier is behind
+  the university's own verification page. Restoring a database backup older than the newest anchor is
+  visible on-chain and needs a new epoch (see [`chain/`](chain/README.md)). Who owns a shared registry is
+  a governance question that code does not answer; here the owner is the university's own admin key.
+- `scripts/chain-test.sh` runs the whole flow against a local chain (also run in CI).
+
 ## Personal signatures (passkeys / security keys)
 
 Turn this on when you need to prove *which person* approved a credential, not only that someone holding the role did.
@@ -367,7 +423,7 @@ sealed in several blocks.
 
 ## Limits you should know about
 
-- **The ledger is not a public blockchain.** It is a signed, hash-linked Merkle ledger in your own database. On its own it detects tampering, but whoever controls the DB *and* the university key could rewrite history. Configure an external timestamp authority (see above) so that rewriting history would contradict a signature you do not control; without one this limit applies in full.
+- **The ledger is not a public blockchain.** It is a signed, hash-linked Merkle ledger in your own database. On its own it detects tampering, but whoever controls the DB *and* the university key could rewrite history. Configure an external timestamp authority (see above) so that rewriting history would contradict a signature you do not control; without one this limit applies in full. The optional on-chain layer (above) goes further and anchors each block to a public chain.
 - Rate limits are fixed windows, so a client can burst up to twice a limit across a window boundary. The per-account login throttle can be used to lock a victim out for the rest of its window by someone who keeps guessing their email; it throttles, it does not disable the account.
 - The built-in WAF is the generic OWASP rule set on a single host. It does not absorb DDoS traffic or replace a managed WAF/CDN; for large-scale exposure put one in front of the edge.
 - The encryption key lives in an environment variable and can be rotated (above), but it is still a plain secret on the host. For higher assurance wrap the signing keys with a KMS/HSM (for example HashiCorp Vault's Transit engine); that is not built in. Losing it is recoverable only if you made a key backup (see above).
