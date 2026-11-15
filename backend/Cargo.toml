@@ -25,7 +25,7 @@ prometheus = { version = "0.14", default-features = false }
 thiserror = "1"
 aes-gcm = "0.10"
 rand = "0.8"
-hmac = "0.12"
+hmac = "0.13"
 sha1 = "0.10"
 base64 = "0.22"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
