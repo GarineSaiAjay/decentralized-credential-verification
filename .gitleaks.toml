@@ -5,3 +5,6 @@ useDefault = true
 [allowlist]
 description = "Throw-away passwords used as fixtures by the end-to-end scripts"
 paths = ['''scripts/auth-test\.sh''', '''scripts/recovery-test\.sh''']
+# A test file name that contains the word "key" (scripts/chain-test.sh), not a key. Only this exact text is excused.
+regexes = ['''forged-with-own-keys\.json''']
+regexTarget = "line"
