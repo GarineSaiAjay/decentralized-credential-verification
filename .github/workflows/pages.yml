@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Only the page itself is published, not the folder's README or anything else.
-      - run: mkdir _site && cp verifier/index.html _site/index.html
+      # Only the page and its two example files are published, not the folder's README or anything else.
+      - run: mkdir -p _site/examples && cp verifier/index.html _site/index.html && cp verifier/examples/*.json _site/examples/
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with: { path: _site }

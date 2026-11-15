@@ -58,6 +58,12 @@ read in the browser and is not uploaded anywhere.
 The list is the `KNOWN` constant at the top of the script in `index.html`. A registry in that list needs
 no tick. Anyone hosting this page decides what goes in it.
 
+## Try it
+
+A fictional credential anchored on Ethereum Sepolia is in [`examples/`](examples/): `credential-full.json`
+proves every field, `credential.json` is the public file. The hosted page links to both. See the main README
+("Live demo") for the contract addresses.
+
 ## Test
 
 `scripts/chain-test.sh` opens this page from disk in Chrome with the backend stopped, and checks that it

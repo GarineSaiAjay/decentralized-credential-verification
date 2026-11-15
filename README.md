@@ -252,6 +252,25 @@ docker compose -f docker-compose.yml -f deploy/chain.yml up -d    # the worker s
   a governance question that code does not answer; here the owner is the university's own admin key.
 - `scripts/chain-test.sh` runs the whole flow against a local chain (also run in CI).
 
+### Live demo on Ethereum Sepolia
+
+A fictional university, "ACVS Demo University", is deployed on Sepolia (a free test network) with one fictional
+credential anchored, so the verification can be tried without installing anything.
+
+| | |
+|---|---|
+| Verifier page | https://garinesaiajay.github.io/decentralized-credential-verification/ |
+| Issuer registry | [`0x2EFeE889C7E8c0D39EC8F7847bde610641a6A41C`](https://sepolia.etherscan.io/address/0x2EFeE889C7E8c0D39EC8F7847bde610641a6A41C) · [source verified on Sourcify](https://repo.sourcify.dev/11155111/0x2EFeE889C7E8c0D39EC8F7847bde610641a6A41C) |
+| Ledger contract | [`0xC92F604a10A76BC9Aab77fd02A6372D1E4f60c40`](https://sepolia.etherscan.io/address/0xC92F604a10A76BC9Aab77fd02A6372D1E4f60c40) · [source verified on Sourcify](https://repo.sourcify.dev/11155111/0xC92F604a10A76BC9Aab77fd02A6372D1E4f60c40) |
+| First anchor | [transaction](https://sepolia.etherscan.io/tx/0xe9dcf5a41634ab7fe55284f7027f66e1720c0f4ecdbf407728f938f1bd0b36e1) |
+| Example files | [`credential-full.json`](verifier/examples/credential-full.json) (proves every field) and [`credential.json`](verifier/examples/credential.json) (the public file) |
+
+To try it, open the verifier page, choose one of the example files (the page links to them) and press **Verify**.
+The page recognises this registry, so there is nothing to tick; it asks a public Sepolia node and shows `VALID`.
+Change one letter of the name in the full file and it shows `INVALID`. The ACVS server is not involved at any
+point. The issuer's DID (`did:web:garinesaiajay.github.io:decentralized-credential-verification`) is a label
+recorded in the registry; no DID document is published at that address.
+
 ## Personal signatures (passkeys / security keys)
 
 Turn this on when you need to prove *which person* approved a credential, not only that someone holding the role did.

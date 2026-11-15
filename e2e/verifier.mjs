@@ -1,7 +1,7 @@
 // Drives the standalone verifier page (verifier/index.html) in real Chrome, opened straight from disk.
 // Run by scripts/chain-test.sh while the ACVS backend is stopped: the page may only talk to the chain node.
 //
-//   node e2e/verifier.mjs check <page.html> <rpc url> <trust: yes|no> <file>=<verdict>[=<part of a failed check's name>] ...
+//   node e2e/verifier.mjs check <page.html | https://page address> <rpc url> <trust: yes|no> <file>=<verdict>[=<part of a failed check's name>] ...
 //   node e2e/verifier.mjs forge <real export.json> <out.json>     (a convincing fake, signed with made-up keys)
 import { chromium } from 'playwright-core';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
@@ -31,6 +31,9 @@ if (mode === 'forge') {
 }
 
 const [pagePath, rpc, trust, ...cases] = args;
+// A local file, or a published address (the Pages site): the page may then also fetch itself, nothing else.
+const pageUrl = /^https?:\/\//.test(pagePath) ? pagePath : pathToFileURL(pagePath).href;
+const own = pageUrl.startsWith('http') ? new URL(pageUrl).origin : 'file:';
 let fails = 0;
 const ok = (m) => console.log('  ok   ' + m), bad = (m) => { fails++; console.log('  FAIL ' + m); };
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -38,11 +41,11 @@ try {
   const page = await (await browser.newContext()).newPage();
   // The page must never reach for anything but the chain node (and itself).
   const elsewhere = [];
-  page.on('request', (r) => { const u = r.url(); if (!u.startsWith('file:') && !u.startsWith(rpc)) elsewhere.push(u); });
+  page.on('request', (r) => { const u = r.url(); if (!u.startsWith(own) && !u.startsWith(rpc)) elsewhere.push(u); });
   for (const c of cases) {
     const [file, want, failed] = c.split('=');
     const name = file.split('/').pop();
-    await page.goto(pathToFileURL(pagePath).href);
+    await page.goto(pageUrl);
     await page.setInputFiles('#file', file);
     await page.locator('#run').waitFor();
     await page.fill('#rpc', rpc);

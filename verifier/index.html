@@ -15,6 +15,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
   main { max-width: 820px; margin: 0 auto; padding: 24px 16px 64px; }
+  a { color: var(--accent); }
   h1 { font-size: 1.5rem; margin: 0 0 4px; }
   h2 { font-size: 1.05rem; margin: 0 0 12px; }
   p { margin: 0 0 12px; }
@@ -63,6 +64,9 @@
     <h2>1. The credential file</h2>
     <input type="file" id="file" accept=".json,application/json">
     <p class="hint">The <span class="mono">credential.json</span> or <span class="mono">credential-full.json</span> file the graduate gave you.</p>
+    <p class="hint">No file to hand? Try an example, a fictional credential anchored on Sepolia:
+      <a href="examples/credential-full.json" download>full file</a> (proves every field) or
+      <a href="examples/credential.json" download>public file</a>.</p>
     <p class="hint" id="file-info" hidden></p>
 
     <div id="settings" hidden>
@@ -107,7 +111,7 @@
 // ---------------------------------------------------------------------------------------------------------
 const KNOWN = {
   31337: { name: 'local test chain', rpc: 'http://127.0.0.1:8545', registries: {} },
-  11155111: { name: 'Ethereum Sepolia (test network)', rpc: 'https://ethereum-sepolia-rpc.publicnode.com', registries: {} },
+  11155111: { name: 'Ethereum Sepolia (test network)', rpc: 'https://ethereum-sepolia-rpc.publicnode.com', registries: { '0x2efee889c7e8c0d39ec8f7847bde610641a6a41c': 'ACVS Demo University registry on Sepolia' } },
 };
 const STAGES = ['faculty', 'exam_cell', 'registrar', 'university'];
 const KEY_STATUS = ['not registered', 'active', 'retired', 'revoked'];
