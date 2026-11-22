@@ -1,4 +1,4 @@
-FROM rust:1-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS builder
+FROM rust:1-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS builder
 RUN apk add --no-cache musl-dev pkgconfig
 WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
