@@ -1,6 +1,6 @@
 # The optional on-chain worker (acvs-chain). Build from the repository root, because it compiles the
 # backend's crypto.rs unchanged:   docker build -f chain/Dockerfile -t acvs-chain .
-FROM rust:1-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS builder
+FROM rust:1-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS builder
 # build-base, cmake and perl are needed by the TLS library's C code (aws-lc).
 RUN apk add --no-cache musl-dev pkgconfig build-base cmake perl linux-headers
 WORKDIR /usr/src/app
